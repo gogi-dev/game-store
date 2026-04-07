@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>ArcadeForge · Premium HTML Game Marketplace</title>
+    <title>GameLoom · Premium HTML Game Marketplace</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
@@ -12,11 +12,11 @@
          * ⚠️ FIRESTORE SECURITY RULES (IMPORTANT)
          * For this app to function correctly, you need to set your Firestore rules to allow read/write access.
          * For testing/development, you can use test mode rules in the Firebase Console:
-         * * rules_version = '2';
+         * rules_version = '2';
          * service cloud.firestore {
          * match /databases/{database}/documents {
          * match /{document=**} {
-         * allow read, write: if true; // Note: In production, secure this with request.auth != null
+         * allow read, write: if true; 
          * }
          * }
          * }
@@ -24,9 +24,9 @@
 
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, collection, doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, query, where, orderBy, limit, increment, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, query, where, orderBy, limit, increment, addDoc, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
         
-        // ========== 🔥 FIREBASE CONFIG (UPDATED WITH PROVIDED CREDS) ==========
+        // ========== 🔥 FIREBASE CONFIG (EXACTLY AS PROVIDED) ==========
         const firebaseConfig = {
             apiKey: "AIzaSyCy5ppRbcHMV1YKtqsrbrwA3GlS3b0P7O8",
             authDomain: "game-store-6779b.firebaseapp.com",
@@ -36,12 +36,10 @@
             appId: "1:962209191071:web:6282529b333749cdee3eaa"
         };
         
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         
-        // Globals for inline handlers
         window.auth = auth;
         window.db = db;
         window.signOut = signOut;
@@ -50,19 +48,40 @@
         window.currentUser = null;
         window.currentView = "store";
         window.allGames = [];
-        window.userLibrary = new Map(); // map of gameId -> libraryData (including lastPlayed)
-        window.userPrefs = JSON.parse(localStorage.getItem('arcadeForgePrefs')) || { theme: 'dark' };
+        window.userLibrary = new Map();
+        window.userPrefs = JSON.parse(localStorage.getItem('gameLoomPrefs')) || { theme: 'dark' };
+        window.activeChatUnsubscribe = null;
+        window.activeChatDocUnsubscribe = null;
+        window.presenceInterval = null;
+        
+        // All Emojis (20+)
+        const avatarEmojis = ['👾','🦊','🤖','👻','🐉','🐱','🦄','😎','🚀','🔥','💎','👑','🐼','🐸','🐯','🦁','🐙','🦖','👽','🤡','🤠'];
 
-        // Apply theme early
         document.documentElement.setAttribute('data-theme', window.userPrefs.theme);
         
         const appContainer = document.getElementById('app-root');
         
+        // Stackable Notification System Fix
         window.showToast = (message, type = "info") => {
-            const toast = document.getElementById('global-toast');
+            let container = document.getElementById('toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toast-container';
+                document.body.appendChild(container);
+            }
+            
+            const toast = document.createElement('div');
+            toast.className = `global-toast ${type}`;
             toast.innerHTML = `<i class="fas ${type === 'error' ? 'fa-exclamation-circle' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle'}"></i> ${message}`;
-            toast.className = `global-toast ${type} show`;
-            setTimeout(() => toast.classList.remove('show'), 4000);
+            container.appendChild(toast);
+            
+            // Trigger animation
+            setTimeout(() => toast.classList.add('show'), 10);
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 400); // match CSS transition
+            }, 4000);
         };
         
         function sanitizeText(str) {
@@ -70,6 +89,135 @@
             const div = document.createElement('div');
             div.textContent = str;
             return div.innerHTML;
+        }
+
+        // ========== PRIVACY POLICY GATE ==========
+        function checkPrivacyPolicy() {
+            if (!localStorage.getItem('gameloom_agreed')) {
+                const modal = document.createElement('div');
+                modal.className = 'fullscreen-modal fade-in';
+                modal.style.zIndex = '100000';
+                modal.innerHTML = `
+                    <div class="glass p-4 rad-lg max-w-800 m-auto" style="max-height: 90vh; overflow-y: auto; text-align:left;">
+                        <h2><i class="fas fa-shield-alt text-accent"></i> Welcome to GameLoom</h2>
+                        <p class="mt-3 text-muted">Before entering the arcade, you must agree to our community rules:</p>
+                        <ul class="mt-3 mb-4 text-muted" style="line-height:1.6; padding-left:1.5rem;">
+                            <li><strong>Age Requirement:</strong> You must be 10 years of age or older to use this service.</li>
+                            <li><strong>Content Ownership:</strong> You may only upload games you have created or have explicit legal permission to distribute.</li>
+                            <li><strong>Prohibited Content:</strong> No illegal, harmful, sexually explicit, or pirated material is allowed.</li>
+                            <li><strong>Data Usage:</strong> Your email, profile data, and activity are stored to provide app functionality (friends, chat, library).</li>
+                            <li><strong>User Responsibility:</strong> GameLoom hosts game links (e.g., GitHub Pages) provided by users. We do not guarantee file safety. Play at your own risk.</li>
+                        </ul>
+                        <button class="btn-primary w-100 large focusable" id="agree-btn">I Agree & Enter</button>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+                document.getElementById('agree-btn').addEventListener('click', () => {
+                    localStorage.setItem('gameloom_agreed', 'true');
+                    modal.remove();
+                    initFocusSystem(); // Re-init focus
+                });
+            }
+        }
+
+        // ========== ANALYTICS & PRESENCE ==========
+        async function initAnalytics() {
+            // Track Total Visit (Once per session)
+            if (!sessionStorage.getItem('gameloom_visited')) {
+                sessionStorage.setItem('gameloom_visited', 'true');
+                try {
+                    await setDoc(doc(db, "analytics", "main"), { totalVisits: increment(1) }, { merge: true });
+                } catch(e) { console.error("Analytics error", e); }
+            }
+
+            // Listen to Total Visits
+            onSnapshot(doc(db, "analytics", "main"), (docSnap) => {
+                const visitsEl = document.getElementById('stat-visits');
+                if (visitsEl && docSnap.exists()) {
+                    visitsEl.innerHTML = `👁️ ${docSnap.data().totalVisits || 0} Visits`;
+                }
+            });
+            
+            updateOnlineStatus(); // Start loop
+        }
+
+        async function updateOnlineStatus() {
+            // Self-Presence Loop
+            if (window.presenceInterval) clearInterval(window.presenceInterval);
+            const updatePresence = async () => {
+                if (window.currentUser) {
+                    try {
+                        await updateDoc(doc(db, "users", window.currentUser.uid), { lastActive: Date.now() });
+                    } catch(e){}
+                }
+            };
+            updatePresence();
+            window.presenceInterval = setInterval(updatePresence, 30000); // 30s
+
+            // Poll online users (last 60s)
+            setInterval(async () => {
+                try {
+                    const snap = await getDocs(collection(db, "users"));
+                    let onlineCount = 0;
+                    const now = Date.now();
+                    snap.forEach(d => {
+                        if (d.data().lastActive && (now - d.data().lastActive < 60000)) onlineCount++;
+                    });
+                    const onlineEl = document.getElementById('stat-online');
+                    if(onlineEl) onlineEl.innerHTML = `🟢 ${onlineCount} Online`;
+                } catch(e){}
+            }, 15000); // Check every 15s
+        }
+
+        // ========== CONTROLLER & KEYBOARD NAVIGATION ==========
+        function initFocusSystem() {
+            window.updateFocusables = () => {
+                window.focusables = Array.from(document.querySelectorAll('button, input, select, textarea, .game-card, .focusable, .lib-item'))
+                                       .filter(el => el.offsetParent !== null); // Only visible
+            };
+            
+            document.addEventListener('keydown', (e) => {
+                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                    e.preventDefault();
+                    window.updateFocusables();
+                    let idx = window.focusables.indexOf(document.activeElement);
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') idx = (idx + 1) % window.focusables.length;
+                    if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') idx = (idx - 1 + window.focusables.length) % window.focusables.length;
+                    if(window.focusables[idx]) window.focusables[idx].focus();
+                }
+            });
+
+            // Gamepad loop
+            let lastBtnState = false;
+            let lastDPadState = 0; 
+            const padLoop = () => {
+                const pads = navigator.getGamepads();
+                const pad = pads[0] || pads[1] || pads[2] || pads[3];
+                if (pad && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                    if (pad.buttons[0].pressed && !lastBtnState) {
+                        if (document.activeElement && typeof document.activeElement.click === 'function') {
+                            document.activeElement.click();
+                        }
+                    }
+                    lastBtnState = pad.buttons[0].pressed;
+
+                    let dPadState = 0;
+                    if (pad.axes[1] < -0.5 || pad.axes[0] < -0.5 || (pad.buttons[12] && pad.buttons[12].pressed) || (pad.buttons[14] && pad.buttons[14].pressed)) dPadState = 1; 
+                    if (pad.axes[1] > 0.5 || pad.axes[0] > 0.5 || (pad.buttons[13] && pad.buttons[13].pressed) || (pad.buttons[15] && pad.buttons[15].pressed)) dPadState = 2; 
+                    
+                    if (dPadState !== 0 && lastDPadState === 0) {
+                        window.updateFocusables();
+                        let idx = window.focusables.indexOf(document.activeElement);
+                        if (idx === -1) idx = 0;
+                        else if (dPadState === 2) idx = (idx + 1) % window.focusables.length;
+                        else if (dPadState === 1) idx = (idx - 1 + window.focusables.length) % window.focusables.length;
+                        if(window.focusables[idx]) window.focusables[idx].focus();
+                    }
+                    lastDPadState = dPadState;
+                }
+                requestAnimationFrame(padLoop);
+            };
+            requestAnimationFrame(padLoop);
         }
 
         // ========== RENDER ENGINE ==========
@@ -81,20 +229,21 @@
             appContainer.innerHTML = `
                 <div class="app-layout fade-in">
                     <nav class="sidebar glass">
-                        <div class="nav-brand"><i class="fas fa-gamepad"></i> ArcadeForge</div>
+                        <div class="nav-brand"><i class="fas fa-gamepad"></i> GameLoom</div>
                         <div class="nav-links">
-                            <button class="nav-btn active" data-nav="store"><i class="fas fa-store"></i> Store</button>
-                            <button class="nav-btn" data-nav="library"><i class="fas fa-layer-group"></i> Library</button>
-                            <button class="nav-btn" data-nav="uploads"><i class="fas fa-laptop-code"></i> My Uploads</button>
-                            <button class="nav-btn" data-nav="upload"><i class="fas fa-cloud-upload-alt"></i> Publish</button>
+                            <button class="nav-btn active focusable" data-nav="store"><i class="fas fa-store"></i> Store</button>
+                            <button class="nav-btn focusable" data-nav="library"><i class="fas fa-layer-group"></i> Library</button>
+                            <button class="nav-btn focusable" data-nav="friends"><i class="fas fa-user-friends"></i> Friends</button>
+                            <button class="nav-btn focusable" data-nav="uploads"><i class="fas fa-laptop-code"></i> My Uploads</button>
+                            <button class="nav-btn focusable" data-nav="upload"><i class="fas fa-cloud-upload-alt"></i> Publish</button>
                         </div>
                         <div class="nav-bottom">
-                            <button class="nav-btn" data-nav="settings"><i class="fas fa-cog"></i> Settings</button>
+                            <button class="nav-btn focusable" data-nav="settings"><i class="fas fa-cog"></i> Settings</button>
                             <div class="nav-user">
                                 <div class="user-avatar">${window.currentUser.photoURL || '👾'}</div>
                                 <div class="user-info">
                                     <span class="u-name">${sanitizeText(window.currentUser.displayName || 'Player')}</span>
-                                    <button id="logout-btn" class="logout-text">Logout</button>
+                                    <button id="logout-btn" class="logout-text focusable">Logout</button>
                                 </div>
                             </div>
                         </div>
@@ -103,10 +252,14 @@
                         <header class="top-bar glass">
                             <div class="search-wrapper">
                                 <i class="fas fa-search"></i>
-                                <input type="text" id="global-search" placeholder="Search games, categories, creators...">
+                                <input type="text" id="global-search" class="focusable" placeholder="Search games, creators...">
                             </div>
-                            <div class="top-actions">
-                                <button class="icon-btn" title="Notifications"><i class="fas fa-bell"></i></button>
+                            <div class="top-actions" style="display:flex; gap:1.5rem; align-items:center;">
+                                <div class="stats-badges text-muted" style="display:flex; gap:1rem; font-size:0.85rem; font-weight:600;">
+                                    <span id="stat-visits">👁️ -- Visits</span>
+                                    <span id="stat-online">🟢 -- Online</span>
+                                </div>
+                                <button class="icon-btn focusable" title="Notifications"><i class="fas fa-bell"></i></button>
                             </div>
                         </header>
                         <div id="dynamic-view" class="dynamic-view"></div>
@@ -120,8 +273,13 @@
                     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     const view = btn.dataset.nav;
+                    
+                    if (window.activeChatUnsubscribe) { window.activeChatUnsubscribe(); window.activeChatUnsubscribe = null; }
+                    if (window.activeChatDocUnsubscribe) { window.activeChatDocUnsubscribe(); window.activeChatDocUnsubscribe = null; }
+                    
                     if (view === 'store') navigateToStore();
                     else if (view === 'library') navigateToLibrary();
+                    else if (view === 'friends') navigateToFriends();
                     else if (view === 'uploads') navigateToMyUploads();
                     else if (view === 'upload') navigateToUpload();
                     else if (view === 'settings') navigateToSettings();
@@ -129,22 +287,20 @@
             });
 
             document.getElementById('global-search')?.addEventListener('keyup', (e) => {
-                // Live search connection
                 window.searchQuery = e.target.value;
                 if (window.currentView === 'store') {
-                    // Quick debounce for live update
                     clearTimeout(window.searchTimeout);
-                    window.searchTimeout = setTimeout(() => {
-                        updateStoreSortAndSearch();
-                    }, 300);
+                    window.searchTimeout = setTimeout(() => updateStoreSortAndSearch(), 300);
                 } else if (e.key === 'Enter') {
-                    navigateToStore();
+                    document.querySelector('[data-nav="store"]').click();
                 }
             });
 
             if (window.currentView === "store") navigateToStore();
             else if (window.currentView === "library") navigateToLibrary();
             else navigateToStore();
+            
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 500);
         }
 
         // ========== AUTH SCREEN ==========
@@ -153,36 +309,31 @@
                 <div class="auth-bg">
                     <div class="auth-container fade-in">
                         <div class="auth-card glass">
-                            <div class="auth-logo"><i class="fas fa-gamepad"></i> ArcadeForge</div>
+                            <div class="auth-logo"><i class="fas fa-gamepad"></i> GameLoom</div>
                             <p class="auth-subtitle">The Premium HTML Game Marketplace</p>
                             <div class="auth-tabs">
-                                <button id="auth-login-tab" class="auth-tab active">Login</button>
-                                <button id="auth-signup-tab" class="auth-tab">Sign Up</button>
+                                <button id="auth-login-tab" class="auth-tab active focusable">Login</button>
+                                <button id="auth-signup-tab" class="auth-tab focusable">Sign Up</button>
                             </div>
                             <div id="auth-form-area">
-                                <input type="email" id="auth-email" class="input-modern" placeholder="Email Address">
-                                <input type="password" id="auth-password" class="input-modern" placeholder="Password">
-                                <input type="text" id="auth-username" class="input-modern hidden" placeholder="Username">
+                                <input type="email" id="auth-email" class="input-modern focusable" placeholder="Email Address">
+                                <input type="password" id="auth-password" class="input-modern focusable" placeholder="Password">
+                                <input type="text" id="auth-username" class="input-modern hidden focusable" placeholder="Username">
                                 <div id="emoji-picker-container" class="hidden">
-                                    <label class="form-label">Choose Avatar</label>
+                                    <label class="form-label mt-2 d-block text-muted">Choose Avatar</label>
                                     <div class="emoji-picker-mini">
-                                        <span class="emoji-option active" data-emoji="👾">👾</span>
-                                        <span class="emoji-option" data-emoji="🦊">🦊</span>
-                                        <span class="emoji-option" data-emoji="🤖">🤖</span>
-                                        <span class="emoji-option" data-emoji="👻">👻</span>
-                                        <span class="emoji-option" data-emoji="🐉">🐉</span>
+                                        ${avatarEmojis.map((e, i) => `<span class="emoji-option focusable ${i===0?'active':''}" data-emoji="${e}" tabindex="0">${e}</span>`).join('')}
                                     </div>
                                 </div>
-                                <button id="auth-action-btn" class="btn-primary w-100 mt-3">Enter Arcade <i class="fas fa-arrow-right"></i></button>
+                                <button id="auth-action-btn" class="btn-primary w-100 mt-4 focusable">Enter Arcade <i class="fas fa-arrow-right" style="margin-left:8px;"></i></button>
                             </div>
-                            <div class="legal-note mt-3"><i class="fas fa-shield-alt"></i> Safe, sandboxed, and curated.</div>
                         </div>
                     </div>
                 </div>
             `;
 
             let isLogin = true;
-            let selectedEmoji = "👾";
+            let selectedEmoji = avatarEmojis[0];
 
             const toggleMode = (login) => {
                 isLogin = login;
@@ -190,7 +341,8 @@
                 document.getElementById('auth-signup-tab').classList.toggle('active', !login);
                 document.getElementById('auth-username').classList.toggle('hidden', login);
                 document.getElementById('emoji-picker-container').classList.toggle('hidden', login);
-                document.getElementById('auth-action-btn').innerHTML = login ? 'Enter Arcade <i class="fas fa-arrow-right"></i>' : 'Create Account';
+                document.getElementById('auth-action-btn').innerHTML = login ? 'Enter Arcade <i class="fas fa-arrow-right" style="margin-left:8px;"></i>' : 'Create Account';
+                window.updateFocusables && window.updateFocusables();
             };
 
             document.getElementById('auth-login-tab').addEventListener('click', () => toggleMode(true));
@@ -202,6 +354,7 @@
                     opt.classList.add('active');
                     selectedEmoji = opt.dataset.emoji;
                 });
+                opt.addEventListener('keydown', (e) => { if(e.key==='Enter') opt.click(); });
             });
 
             document.getElementById('auth-action-btn').addEventListener('click', async () => {
@@ -223,14 +376,13 @@
                         if(!username) throw new Error("Username required");
                         const cred = await createUserWithEmailAndPassword(auth, email, pwd);
                         await updateProfile(cred.user, { displayName: username, photoURL: selectedEmoji });
-                        // Save user in users collection
-                        await setDoc(doc(db, "users", cred.user.uid), { uid: cred.user.uid, username, email, emoji: selectedEmoji, createdAt: serverTimestamp() });
+                        await setDoc(doc(db, "users", cred.user.uid), { uid: cred.user.uid, username, email, emoji: selectedEmoji, createdAt: serverTimestamp(), lastActive: Date.now() });
                         showToast("Account created successfully!", "success");
                     }
                 } catch(e) { 
                     showToast(e.message.replace('Firebase: ', ''), "error"); 
                     btn.disabled = false;
-                    btn.innerHTML = isLogin ? 'Enter Arcade <i class="fas fa-arrow-right"></i>' : 'Create Account';
+                    btn.innerHTML = isLogin ? 'Enter Arcade <i class="fas fa-arrow-right" style="margin-left:8px;"></i>' : 'Create Account';
                 }
             });
         }
@@ -242,38 +394,39 @@
                 const snap = await getDocs(q);
                 window.allGames = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             } catch (e) {
-                console.error(e);
                 if(window.allGames.length === 0) showToast("Could not load games (check DB rules)", "error");
             }
         }
 
         async function fetchLibrary() {
-            // Using localStorage for Library as requested
             if (!window.currentUser) return;
             try {
-                const localData = localStorage.getItem(`arcadeForgeLibrary_${window.currentUser.uid}`);
+                const localData = localStorage.getItem(`gameLoomLibrary_${window.currentUser.uid}`);
                 const libItems = localData ? JSON.parse(localData) : [];
                 window.userLibrary.clear();
                 libItems.forEach(item => window.userLibrary.set(item.gameId, item));
             } catch(e) { console.error("Library fetch error", e); }
         }
 
-        // ========== VIEWS ==========
         function showLoader(container) {
             container.innerHTML = `
                 <div class="loader-container fade-in">
                     <div class="skeleton-banner"></div>
                     <div class="games-grid mt-3">
                         <div class="skeleton-card"></div><div class="skeleton-card"></div>
-                        <div class="skeleton-card"></div><div class="skeleton-card"></div>
                     </div>
                 </div>
             `;
         }
 
+        // ========== STORE VIEWS ==========
         window.updateStoreSortAndSearch = () => {
-            const sq = window.searchQuery ? window.searchQuery.toLowerCase() : "";
-            let filtered = window.allGames.filter(g => !sq || g.title?.toLowerCase().includes(sq) || g.tags?.some(t=>t.toLowerCase().includes(sq)));
+            const sq = window.searchQuery ? window.searchQuery.toLowerCase().trim() : "";
+            let filtered = window.allGames.filter(g => !sq || 
+                g.title?.toLowerCase().includes(sq) || 
+                g.creator?.toLowerCase().includes(sq) || 
+                g.tags?.some(t=>t.toLowerCase().includes(sq)));
+                
             const sortVal = document.getElementById('sort-select')?.value || 'newest';
             
             if(sortVal === 'popular') filtered.sort((a,b)=>(b.likes||0)-(a.likes||0));
@@ -287,9 +440,9 @@
             }
             grid.innerHTML = filtered.map(game => {
                 const isInstalled = window.userLibrary.has(game.id);
-                const isNew = (Date.now() - (game.createdAt?.toMillis() || 0)) < 604800000; // 7 days
+                const isNew = (Date.now() - (game.createdAt?.toMillis() || 0)) < 604800000;
                 return `
-                <div class="game-card glass" onclick="navigateToGameDetail('${game.id}')">
+                <div class="game-card glass focusable" tabindex="0" onclick="navigateToGameDetail('${game.id}')" onkeydown="if(event.key==='Enter')this.click()">
                     <div class="game-image-wrapper">
                         <img src="${game.iconURL || game.iconUrl || 'https://placehold.co/400x300/1e293b/ffffff?text=🎮'}" loading="lazy">
                         ${isNew ? '<span class="card-badge">NEW</span>' : ''}
@@ -298,15 +451,16 @@
                         <h3 class="truncate">${sanitizeText(game.title)}</h3>
                         <p class="creator-name">by ${sanitizeText(game.creator)}</p>
                         <div class="game-meta">
-                            <span><i class="fas fa-thumbs-up text-accent"></i> ${game.likes || 0}</span>
-                            <span><i class="fas fa-thumbs-down text-danger"></i> ${game.dislikes || 0}</span>
+                            <span><i class="fas fa-thumbs-up text-accent"></i> <span id="store-likes-${game.id}">${game.likes || 0}</span></span>
+                            <span><i class="fas fa-thumbs-down text-danger"></i> <span id="store-dislikes-${game.id}">${game.dislikes || 0}</span></span>
                         </div>
-                        <button class="btn-install w-100 mt-2 ${isInstalled ? 'installed' : ''}" onclick="event.stopPropagation(); toggleInstall('${game.id}')">
+                        <button class="btn-install w-100 mt-2 focusable ${isInstalled ? 'installed' : ''}" id="store-install-${game.id}" tabindex="0" onclick="event.stopPropagation(); toggleInstall('${game.id}')">
                             ${isInstalled ? '<i class="fas fa-check"></i> In Library' : '<i class="fas fa-download"></i> Add to Library'}
                         </button>
                     </div>
                 </div>
             `}).join('');
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
         };
 
         window.navigateToStore = async () => {
@@ -316,9 +470,8 @@
             await fetchGames();
             await fetchLibrary();
             
-            const games = window.allGames;
-            const featured = [...games].sort((a,b)=>(b.likes||0)-(a.likes||0)).slice(0, 3);
-            const sq = window.searchQuery ? window.searchQuery.toLowerCase() : "";
+            const featured = [...window.allGames].sort((a,b)=>(b.likes||0)-(a.likes||0)).slice(0, 3);
+            const sq = window.searchQuery ? window.searchQuery.toLowerCase().trim() : "";
 
             viewDiv.innerHTML = `
                 <div class="fade-in">
@@ -329,7 +482,7 @@
                             <h1 class="hero-title">${sanitizeText(featured[0].title)}</h1>
                             <p class="hero-desc">${sanitizeText(featured[0].description).substring(0, 150)}...</p>
                             <div class="hero-actions">
-                                <button class="btn-primary" onclick="navigateToGameDetail('${featured[0].id}')">View Details</button>
+                                <button class="btn-primary focusable" onclick="navigateToGameDetail('${featured[0].id}')">View Details</button>
                             </div>
                         </div>
                         <div class="hero-image" style="background-image: url('${featured[0].screenshots?.[0] || featured[0].iconURL || featured[0].iconUrl || 'https://placehold.co/800x400/111827/ffffff?text=No+Image'}')"></div>
@@ -338,7 +491,7 @@
                     <div class="section-header mt-4">
                         <h2>${sq ? `Search Results for "${sq}"` : 'Discover Games'}</h2>
                         <div class="filters">
-                            <select id="sort-select" class="input-modern slim">
+                            <select id="sort-select" class="input-modern slim focusable">
                                 <option value="newest">Newest Releases</option>
                                 <option value="popular">Most Popular</option>
                             </select>
@@ -360,7 +513,6 @@
             await fetchLibrary();
 
             const libGames = window.allGames.filter(g => window.userLibrary.has(g.id));
-            // Sort by recently played locally
             libGames.sort((a,b) => (window.userLibrary.get(b.id).lastPlayed || 0) - (window.userLibrary.get(a.id).lastPlayed || 0));
 
             viewDiv.innerHTML = `
@@ -370,8 +522,7 @@
                         <div class="empty-state glass">
                             <i class="fas fa-box-open fa-3x mb-3 text-muted"></i>
                             <h3>Your library is empty</h3>
-                            <p>Head over to the Store to discover amazing games.</p>
-                            <button class="btn-primary mt-3" onclick="navigateToStore()">Go to Store</button>
+                            <button class="btn-primary mt-3 focusable" onclick="document.querySelector('[data-nav=\\'store\\']').click()">Go to Store</button>
                         </div>
                     ` : `
                         <div class="library-list">
@@ -379,15 +530,15 @@
                                 const libData = window.userLibrary.get(game.id);
                                 const lastPlayedStr = libData.lastPlayed ? new Date(libData.lastPlayed).toLocaleDateString() : 'Never';
                                 return `
-                                <div class="lib-item glass">
+                                <div class="lib-item glass focusable" tabindex="0" onclick="navigateToGameDetail('${game.id}')" onkeydown="if(event.key==='Enter')this.click()">
                                     <img src="${game.iconURL || game.iconUrl}" class="lib-thumb" onerror="this.src='https://placehold.co/100x100/1e293b/ffffff?text=🎮'">
                                     <div class="lib-details">
                                         <h3>${sanitizeText(game.title)}</h3>
                                         <p>Last played: ${lastPlayedStr}</p>
                                     </div>
                                     <div class="lib-actions">
-                                        <button class="btn-primary" onclick="launchGame('${game.id}')"><i class="fas fa-play"></i> Play</button>
-                                        <button class="btn-icon" title="Remove" onclick="toggleInstall('${game.id}', true)"><i class="fas fa-trash"></i></button>
+                                        <button class="btn-primary focusable" onclick="event.stopPropagation(); launchGame('${game.id}')"><i class="fas fa-play"></i> Play</button>
+                                        <button class="btn-icon focusable text-danger" title="Remove" onclick="event.stopPropagation(); toggleInstall('${game.id}', true)"><i class="fas fa-trash"></i></button>
                                     </div>
                                 </div>
                                 `
@@ -396,8 +547,10 @@
                     `}
                 </div>
             `;
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
         };
 
+        // ========== MY UPLOADS & EDIT/DELETE ==========
         window.navigateToMyUploads = async () => {
             window.currentView = "uploads";
             const viewDiv = document.getElementById('dynamic-view');
@@ -410,18 +563,17 @@
                 <div class="fade-in">
                     <div class="section-header">
                         <h2><i class="fas fa-laptop-code text-accent"></i> Publisher Dashboard</h2>
-                        <button class="btn-primary" onclick="navigateToUpload()"><i class="fas fa-plus"></i> New Game</button>
+                        <button class="btn-primary focusable" onclick="document.querySelector('[data-nav=\\'upload\\']').click()"><i class="fas fa-plus"></i> New Game</button>
                     </div>
                     ${myGames.length === 0 ? `
                         <div class="empty-state glass">
                             <i class="fas fa-upload fa-3x mb-3 text-muted"></i>
                             <h3>No uploads yet</h3>
-                            <p>Share your creations with the community!</p>
                         </div>
                     ` : `
                         <div class="stats-row mb-4">
                             <div class="stat-card glass">
-                                <h4>Total Views/Downloads</h4>
+                                <h4>Total Downloads</h4>
                                 <h2>${myGames.reduce((acc, g) => acc + (g.downloads || 0), 0)}</h2>
                             </div>
                             <div class="stat-card glass">
@@ -429,16 +581,17 @@
                                 <h2>${myGames.reduce((acc, g) => acc + (g.likes || 0), 0)}</h2>
                             </div>
                         </div>
-                        <div class="games-grid">
+                        <div class="library-list">
                             ${myGames.map(game => `
-                                <div class="game-card glass" onclick="navigateToGameDetail('${game.id}')">
-                                    <div class="game-image-wrapper"><img src="${game.iconURL || game.iconUrl}" loading="lazy"></div>
-                                    <div class="game-info">
-                                        <h3 class="truncate">${sanitizeText(game.title)}</h3>
-                                        <div class="game-meta mt-2">
-                                            <span><i class="fas fa-download"></i> ${game.downloads||0}</span>
-                                            <span class="badge badge-accent">Manage</span>
-                                        </div>
+                                <div class="lib-item glass focusable">
+                                    <img src="${game.iconURL || game.iconUrl}" class="lib-thumb">
+                                    <div class="lib-details">
+                                        <h3>${sanitizeText(game.title)}</h3>
+                                        <p><i class="fas fa-download text-accent"></i> ${game.downloads||0} &nbsp;&nbsp; <i class="fas fa-thumbs-up text-accent"></i> ${game.likes||0}</p>
+                                    </div>
+                                    <div class="lib-actions">
+                                        <button class="btn-secondary focusable" onclick="openEditModal('${game.id}')"><i class="fas fa-edit"></i> Edit</button>
+                                        <button class="btn-icon focusable text-danger" onclick="deleteGame('${game.id}')"><i class="fas fa-trash"></i></button>
                                     </div>
                                 </div>
                             `).join('')}
@@ -446,12 +599,253 @@
                     `}
                 </div>
             `;
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
+        };
+
+        window.deleteGame = async (gameId) => {
+            if(!confirm("Are you sure you want to delete this game? This cannot be undone.")) return;
+            try {
+                await deleteDoc(doc(db, "games", gameId));
+                showToast("Game deleted", "success");
+                navigateToMyUploads();
+            } catch(e) { showToast("Failed to delete", "error"); }
+        };
+
+        window.openEditModal = (gameId) => {
+            const game = window.allGames.find(g => g.id === gameId);
+            if(!game) return;
+            
+            const modal = document.createElement('div');
+            modal.className = 'fullscreen-modal fade-in';
+            modal.style.zIndex = '9000';
+            modal.innerHTML = `
+                <div class="glass p-4 rad-lg max-w-800 m-auto upload-form" style="max-height:90vh; overflow-y:auto;">
+                    <h2>Edit Game</h2>
+                    <div class="form-group mt-3"><label>Game Title *</label><input type="text" id="ed-title" class="input-modern focusable" value="${game.title}"></div>
+                    <div class="form-group"><label>Description *</label><textarea id="ed-desc" class="input-modern focusable" rows="4">${game.description}</textarea></div>
+                    <div class="form-group"><label>GitHub Game URL *</label><input type="url" id="ed-file" class="input-modern focusable" value="${game.gameURL || game.gameFileUrl || ''}"></div>
+                    <div class="form-group"><label>Icon URL *</label><input type="url" id="ed-icon" class="input-modern focusable" value="${game.iconURL || game.iconUrl || ''}"></div>
+                    <div class="form-group"><label>Screenshots URLs (comma separated)</label><input type="text" id="ed-screenshots" class="input-modern focusable" value="${(game.screenshots || []).join(', ')}"></div>
+                    <div style="display:flex; gap:1rem; margin-top:2rem;">
+                        <button class="btn-primary flex-1 focusable" id="save-edit-btn">Save Changes</button>
+                        <button class="btn-secondary flex-1 focusable" onclick="this.closest('.fullscreen-modal').remove(); window.updateFocusables();">Cancel</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            window.updateFocusables && window.updateFocusables();
+            
+            document.getElementById('save-edit-btn').addEventListener('click', async () => {
+                const title = document.getElementById('ed-title').value.trim();
+                const desc = document.getElementById('ed-desc').value.trim();
+                const file = document.getElementById('ed-file').value.trim();
+                const icon = document.getElementById('ed-icon').value.trim();
+                const ssUrls = document.getElementById('ed-screenshots').value.trim().split(',').map(s=>s.trim()).filter(Boolean);
+
+                if(!title || !desc || !file || !icon) return showToast("Fill required fields", "error");
+                
+                try {
+                    await updateDoc(doc(db, "games", gameId), { title, description: desc, gameURL: file, iconURL: icon, screenshots: ssUrls });
+                    showToast("Game updated!", "success");
+                    modal.remove();
+                    navigateToMyUploads();
+                } catch(e) { showToast("Update failed", "error"); }
+            });
+        };
+
+        // ========== FRIENDS & CHAT ==========
+        window.navigateToFriends = async () => {
+            window.currentView = "friends";
+            const viewDiv = document.getElementById('dynamic-view');
+            viewDiv.innerHTML = `
+                <div class="fade-in" style="display:flex; gap:2rem; height:calc(100vh - 150px);">
+                    <div class="glass p-4 rad-lg" style="width:300px; display:flex; flex-direction:column; box-sizing:border-box;">
+                        <h3 class="mb-3"><i class="fas fa-users text-accent"></i> Friends</h3>
+                        <div class="search-wrapper mb-3 w-100" style="max-width:100%;">
+                            <input type="text" id="friend-search" class="focusable" placeholder="Search email/username...">
+                        </div>
+                        <button class="btn-secondary w-100 mb-3 focusable" onclick="searchUser()"><i class="fas fa-search"></i> Find User</button>
+                        <div id="friends-list" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:0.5rem;">
+                            <div class="text-center text-muted mt-3"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+                        </div>
+                    </div>
+                    
+                    <div class="glass rad-lg" style="flex:1; display:flex; flex-direction:column; overflow:hidden;" id="chat-container">
+                        <div class="empty-state" style="margin:auto; text-align:center;">
+                            <i class="fas fa-comments fa-3x text-muted mb-3"></i>
+                            <h3 class="text-muted">Select a friend to start chatting</h3>
+                        </div>
+                    </div>
+                </div>
+            `;
+            loadFriendsList();
+        };
+
+        window.searchUser = async () => {
+            const val = document.getElementById('friend-search').value.trim();
+            if(!val) return;
+            try {
+                let q = query(collection(db, "users"), where("email", "==", val));
+                let snap = await getDocs(q);
+                if(snap.empty) {
+                    q = query(collection(db, "users"), where("username", "==", val));
+                    snap = await getDocs(q);
+                }
+                if(snap.empty) return showToast("User not found", "error");
+                
+                const user = snap.docs[0].data();
+                if(user.uid === window.currentUser.uid) return showToast("That's you!", "info");
+                
+                await setDoc(doc(db, "users", window.currentUser.uid, "friends", user.uid), {
+                    uid: user.uid, username: user.username, emoji: user.emoji, addedAt: Date.now()
+                });
+                await setDoc(doc(db, "users", user.uid, "friends", window.currentUser.uid), {
+                    uid: window.currentUser.uid, username: window.currentUser.displayName, emoji: window.currentUser.photoURL, addedAt: Date.now()
+                });
+                
+                showToast("Friend added!", "success");
+                loadFriendsList();
+            } catch(e) { showToast("Search failed", "error"); }
+        };
+
+        async function loadFriendsList() {
+            try {
+                const snap = await getDocs(collection(db, "users", window.currentUser.uid, "friends"));
+                const list = document.getElementById('friends-list');
+                if(!list) return;
+                
+                if(snap.empty) {
+                    list.innerHTML = `<p class="text-muted text-center mt-3" style="font-size:0.9rem;">No friends yet.</p>`;
+                    return;
+                }
+                
+                let html = '';
+                for (let d of snap.docs) {
+                    const f = d.data();
+                    const userSnap = await getDoc(doc(db, "users", f.uid));
+                    const isOnline = userSnap.exists() && (Date.now() - (userSnap.data().lastActive || 0) < 60000);
+                    const statusDot = isOnline ? '<div class="status-dot online"></div>' : '<div class="status-dot offline"></div>';
+
+                    html += `
+                        <div class="lib-item glass focusable" style="padding:0.6rem; cursor:pointer;" onclick="openChat('${f.uid}', '${f.username}')" tabindex="0">
+                            <div class="user-avatar" style="width:35px; height:35px; position:relative;">
+                                ${f.emoji||'👾'}
+                                ${statusDot}
+                            </div>
+                            <div class="lib-details"><h4 style="font-size:1rem; margin:0;">${sanitizeText(f.username)}</h4></div>
+                        </div>
+                    `;
+                }
+                list.innerHTML = html;
+                setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
+            } catch(e) { console.error(e); }
+        }
+
+        window.openChat = (friendId, friendName) => {
+            if(window.activeChatUnsubscribe) { window.activeChatUnsubscribe(); window.activeChatUnsubscribe = null; }
+            if(window.activeChatDocUnsubscribe) { window.activeChatDocUnsubscribe(); window.activeChatDocUnsubscribe = null; }
+            
+            const chatId = window.currentUser.uid < friendId ? `${window.currentUser.uid}_${friendId}` : `${friendId}_${window.currentUser.uid}`;
+            const chatRef = doc(db, "chats", chatId);
+            
+            const chatCont = document.getElementById('chat-container');
+            chatCont.innerHTML = `
+                <div class="game-toolbar" style="padding:1rem; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; gap:1rem;">
+                    <h3 style="margin:0;"><i class="fas fa-comment text-accent"></i> ${sanitizeText(friendName)}</h3>
+                    <span id="chat-header-status" class="badge badge-subtle">...</span>
+                </div>
+                <div id="chat-messages" style="flex:1; overflow-y:auto; padding:1.5rem; display:flex; flex-direction:column; gap:1rem; scroll-behavior:smooth;">
+                    <div class="text-center text-muted"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+                </div>
+                <div id="typing-indicator" style="padding: 0 1.5rem; font-size: 0.8rem; color: var(--text-muted); display: none; font-style: italic;">
+                    ${sanitizeText(friendName)} is typing...
+                </div>
+                <div style="padding:1rem; border-top:1px solid rgba(255,255,255,0.1); display:flex; gap:0.5rem; background:rgba(0,0,0,0.2);">
+                    <input type="text" id="msg-input" class="input-modern focusable" style="flex:1;" placeholder="Type a message..." onkeydown="if(event.key==='Enter') document.getElementById('send-msg-btn').click()">
+                    <button id="send-msg-btn" class="btn-primary focusable"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            `;
+            
+            getDoc(doc(db, "users", friendId)).then(uSnap => {
+                if(uSnap.exists()) {
+                    const isOnline = (Date.now() - (uSnap.data().lastActive || 0) < 60000);
+                    document.getElementById('chat-header-status').innerHTML = isOnline ? '🟢 Online' : '⚫ Offline';
+                }
+            });
+
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
+
+            window.activeChatDocUnsubscribe = onSnapshot(chatRef, (docSnap) => {
+                const data = docSnap.data() || {};
+                const typingObj = data.typing || {};
+                const isTyping = typingObj[friendId] && (Date.now() - typingObj[friendId] < 4000);
+                const ind = document.getElementById('typing-indicator');
+                if(ind) ind.style.display = isTyping ? 'block' : 'none';
+            });
+
+            document.getElementById('msg-input').addEventListener('input', () => {
+                setDoc(chatRef, { typing: { [window.currentUser.uid]: Date.now() } }, { merge: true });
+            });
+
+            document.getElementById('send-msg-btn').addEventListener('click', async () => {
+                const input = document.getElementById('msg-input');
+                const text = input.value.trim();
+                if(!text) return;
+                input.value = '';
+                try {
+                    await addDoc(collection(db, "chats", chatId, "messages"), {
+                        senderId: window.currentUser.uid, text: text, seen: false, createdAt: serverTimestamp()
+                    });
+                } catch(e) { showToast("Failed to send", "error"); }
+            });
+
+            const q = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
+            window.activeChatUnsubscribe = onSnapshot(q, (snap) => {
+                const msgBox = document.getElementById('chat-messages');
+                if(!msgBox) return;
+                
+                if(snap.empty) {
+                    msgBox.innerHTML = '<p class="text-muted text-center mt-auto mb-auto">Say hello!</p>';
+                    return;
+                }
+                
+                let html = '';
+                snap.forEach(d => {
+                    const m = d.data();
+                    const isMe = m.senderId === window.currentUser.uid;
+                    
+                    if (!isMe && !m.seen) {
+                        updateDoc(d.ref, { seen: true });
+                    }
+                    
+                    const tick = isMe ? `<div class="msg-status">${m.seen ? '✓✓' : '✓'}</div>` : '';
+                    
+                    html += `
+                        <div style="max-width:70%; align-self: ${isMe ? 'flex-end' : 'flex-start'};">
+                            <div style="background: ${isMe ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}; padding:0.8rem 1rem; border-radius:18px; ${isMe ? 'border-bottom-right-radius:4px;' : 'border-bottom-left-radius:4px;'}">
+                                ${sanitizeText(m.text)}
+                                ${tick}
+                            </div>
+                        </div>
+                    `;
+                });
+                msgBox.innerHTML = html;
+                msgBox.scrollTop = msgBox.scrollHeight;
+            });
+        };
+
+        // ========== CORE GAME VIEWS ==========
+
+        // Embed Game in Container Function
+        window.embedGame = (url, containerId) => {
+            const container = document.getElementById(containerId);
+            if(!container) return;
+            container.innerHTML = `<iframe class="game-iframe fade-in" style="width:100%; height:100%; border:none; border-radius:24px; min-height:400px; z-index:5; position:relative; background:#000;" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" src="${url}"></iframe>`;
         };
 
         window.toggleInstall = async (gameId, forceRemove = false) => {
             if(!window.currentUser) return;
             const exists = window.userLibrary.has(gameId);
-            
             try {
                 if(exists || forceRemove) {
                     if(forceRemove && !confirm("Remove from library?")) return;
@@ -462,25 +856,29 @@
                     const gameURL = gameData?.gameURL || gameData?.gameFileUrl;
                     window.userLibrary.set(gameId, { gameId, gameURL, addedAt: Date.now(), lastPlayed: null });
                     showToast("Added to library!", "success");
-                    // Update downloads count purely for metrics
                     await updateDoc(doc(db,"games",gameId), { downloads: increment(1) });
                 }
+                localStorage.setItem(`gameLoomLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
                 
-                // Save to localStorage
-                localStorage.setItem(`arcadeForgeLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
-                
-                // Refresh current view slightly
+                // NO RELOAD logic for active views
                 if(window.currentView === 'store') {
-                    const btn = document.querySelector(`.btn-install[onclick*="${gameId}"]`);
+                    const btn = document.getElementById(`store-install-${gameId}`);
                     if(btn) {
-                        const nowInstalled = !exists;
-                        btn.className = `btn-install w-100 mt-2 ${nowInstalled ? 'installed' : ''}`;
+                        const nowInstalled = window.userLibrary.has(gameId);
+                        btn.className = `btn-install w-100 mt-2 focusable ${nowInstalled ? 'installed' : ''}`;
                         btn.innerHTML = nowInstalled ? '<i class="fas fa-check"></i> In Library' : '<i class="fas fa-download"></i> Add to Library';
+                        btn.classList.remove('pop-anim'); void btn.offsetWidth; btn.classList.add('pop-anim');
                     }
                 } else if(window.currentView === 'library') {
                     navigateToLibrary();
                 } else if(window.currentView === 'gameDetail') {
-                    navigateToGameDetail(gameId);
+                    const btn = document.getElementById(`detail-install-${gameId}`);
+                    if(btn) {
+                        const nowInstalled = window.userLibrary.has(gameId);
+                        btn.className = `btn-secondary large w-100 focusable ${nowInstalled ? 'active' : ''}`;
+                        btn.innerHTML = nowInstalled ? '<i class="fas fa-check"></i> In Library' : '<i class="fas fa-download"></i> Add to Library';
+                        btn.classList.remove('pop-anim'); void btn.offsetWidth; btn.classList.add('pop-anim');
+                    }
                 }
             } catch(e) { showToast("Error updating library", "error"); }
         };
@@ -489,95 +887,141 @@
             window.currentView = "gameDetail";
             const viewDiv = document.getElementById('dynamic-view');
             showLoader(viewDiv);
-            
             try {
                 const gameSnap = await getDoc(doc(db,"games",gameId));
                 if(!gameSnap.exists()) { navigateToStore(); return; }
                 const game = {id: gameSnap.id, ...gameSnap.data()};
                 
                 const commentsSnap = await getDocs(query(collection(db,"comments"), where("gameId", "==", gameId)));
-                // Sort client side because where + orderBy requires composite index
-                const comments = commentsSnap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+                let comments = commentsSnap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
                 
+                // Load user comment votes for instant UI matching
+                const userCommentVotes = {};
+                if (window.currentUser) {
+                    await Promise.all(comments.map(async c => {
+                        const cvSnap = await getDoc(doc(db, "comment_votes", `${window.currentUser.uid}_${c.id}`));
+                        if(cvSnap.exists()) userCommentVotes[c.id] = cvSnap.data().type;
+                    }));
+                }
+
                 const voteRef = doc(db,"votes", `${window.currentUser.uid}_${gameId}`);
                 const voteSnap = await getDoc(voteRef);
-                const userVote = voteSnap.exists() ? voteSnap.data().type : null; // 'like' or 'dislike'
+                const userVote = voteSnap.exists() ? voteSnap.data().type : null;
                 const isInstalled = window.userLibrary.has(gameId);
 
+                // Suggested Games (Exclude current, random slice)
+                const suggestedGames = window.allGames.filter(g => g.id !== gameId).sort(() => 0.5 - Math.random()).slice(0, 4);
+                const suggestedHtml = suggestedGames.length > 0 ? suggestedGames.map(sg => `
+                    <div class="game-card glass focusable" style="min-width:200px;" tabindex="0" onclick="navigateToGameDetail('${sg.id}')" onkeydown="if(event.key==='Enter')this.click()">
+                        <div class="game-image-wrapper" style="height:120px;">
+                            <img src="${sg.iconURL || sg.iconUrl || 'https://placehold.co/400x300/1e293b/ffffff?text=🎮'}" loading="lazy">
+                        </div>
+                        <div class="game-info" style="padding:0.8rem;">
+                            <h3 class="truncate" style="font-size:1rem;">${sanitizeText(sg.title)}</h3>
+                            <div class="game-meta" style="margin-bottom:0;">
+                                <span><i class="fas fa-thumbs-up text-accent"></i> ${sg.likes || 0}</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('') : '<p class="text-muted">No suggestions available.</p>';
+
+                // Render Layout: Preview -> Info -> Comments -> Suggested
                 viewDiv.innerHTML = `
                     <div class="fade-in">
-                        <button class="btn-text mb-3" onclick="navigateToStore()"><i class="fas fa-arrow-left"></i> Back to Store</button>
+                        <button class="btn-text mb-3 focusable" onclick="navigateToStore()"><i class="fas fa-arrow-left"></i> Back to Store</button>
                         
-                        <div class="detail-hero glass">
-                            <img src="${game.iconURL || game.iconUrl}" class="detail-icon" onerror="this.src='https://placehold.co/400x400/1e293b/ffffff?text=🎮'">
-                            <div class="detail-main-info">
+                        <div class="game-preview-container glass" id="game-player-area-${game.id}">
+                            <img src="${game.iconURL || game.iconUrl}" alt="Preview" style="position:absolute; width:100%; height:100%; object-fit:cover; opacity:0.4; filter:blur(10px);">
+                            <img src="${(game.screenshots && game.screenshots.length > 0) ? game.screenshots[0] : (game.iconURL || game.iconUrl)}" style="max-height:400px; max-width:90%; z-index:1; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.5); object-fit:contain;">
+                            <div class="play-overlay" onclick="embedGame('${game.gameURL || game.gameFileUrl}', 'game-player-area-${game.id}')">
+                                <button class="btn-primary focusable" style="font-size:1.8rem; padding:1.2rem 2.5rem; border-radius:24px; box-shadow: 0 0 30px rgba(60,110,255,0.6); pointer-events:none;"><i class="fas fa-play"></i> Play Now</button>
+                            </div>
+                        </div>
+
+                        <div class="detail-main-info glass p-4 rad-lg mb-4" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:2rem;">
+                            <div style="flex:1; min-width:300px;">
                                 <h1>${sanitizeText(game.title)}</h1>
                                 <p class="creator-name mb-2">Developed by <strong>${sanitizeText(game.creator)}</strong></p>
                                 <div class="tags-row mb-3">
                                     <span class="badge badge-accent">${sanitizeText(game.category || 'Game')}</span>
                                     ${(game.tags||[]).slice(0,3).map(t => `<span class="badge badge-subtle">${sanitizeText(t)}</span>`).join('')}
                                 </div>
-                                <p class="detail-desc">${sanitizeText(game.description)}</p>
+                                <p class="detail-desc" style="max-width:800px;">${sanitizeText(game.description)}</p>
                                 
-                                <div class="detail-actions mt-4" style="display:flex; align-items:center; gap: 1rem;">
-                                    <button class="btn-primary large" onclick="launchGame('${game.id}')"><i class="fas fa-play"></i> Play Now</button>
-                                    <button class="btn-secondary large ${isInstalled ? 'active' : ''}" onclick="toggleInstall('${game.id}')">
-                                        ${isInstalled ? '<i class="fas fa-check"></i> Library' : '<i class="fas fa-plus"></i> Library'}
-                                    </button>
-                                    
-                                    <div style="display:flex; align-items:center; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 0.2rem;">
-                                        <button class="btn-icon ${userVote === 'like' ? 'text-accent' : ''}" onclick="toggleVote('${game.id}', 'like')" id="like-btn" title="Like">
-                                            <i class="fas fa-thumbs-up"></i>
-                                        </button>
-                                        <span class="text-muted" style="margin: 0 0.5rem; font-weight:600;">${game.likes || 0}</span>
-                                        <button class="btn-icon ${userVote === 'dislike' ? 'text-danger' : ''}" onclick="toggleVote('${game.id}', 'dislike')" id="dislike-btn" title="Dislike">
-                                            <i class="fas fa-thumbs-down"></i>
-                                        </button>
-                                        <span class="text-muted" style="margin: 0 0.5rem 0 0.2rem; font-weight:600;">${game.dislikes || 0}</span>
+                                ${game.screenshots && game.screenshots.length > 0 ? `
+                                <div class="mt-4">
+                                    <h4 class="text-muted mb-2"><i class="fas fa-image"></i> Gallery</h4>
+                                    <div class="screenshot-gallery" style="margin-top:0;">
+                                        ${game.screenshots.map(url => `<img src="${url}" class="gallery-img glass focusable" tabindex="0">`).join('')}
                                     </div>
+                                </div>` : ''}
+                            </div>
+
+                            <div class="detail-actions" style="display:flex; flex-direction:column; gap: 1rem; min-width:250px;">
+                                <button class="btn-secondary large focusable w-100 ${isInstalled ? 'active' : ''}" id="detail-install-${game.id}" onclick="toggleInstall('${game.id}')">
+                                    ${isInstalled ? '<i class="fas fa-check"></i> In Library' : '<i class="fas fa-download"></i> Add to Library'}
+                                </button>
+                                <div style="display:flex; align-items:center; justify-content:center; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 0.8rem; gap:0.8rem;">
+                                    <button class="btn-icon focusable ${userVote === 'like' ? 'text-accent' : ''}" id="vote-like-${game.id}" onclick="toggleVote('${game.id}', 'like')"><i class="fas fa-thumbs-up"></i></button>
+                                    <span class="text-muted" id="count-like-${game.id}" style="font-weight:600;">${game.likes || 0}</span>
+                                    <div style="width:1px; height:24px; background:rgba(255,255,255,0.1); margin:0 0.5rem;"></div>
+                                    <button class="btn-icon focusable ${userVote === 'dislike' ? 'text-danger' : ''}" id="vote-dislike-${game.id}" onclick="toggleVote('${game.id}', 'dislike')"><i class="fas fa-thumbs-down"></i></button>
+                                    <span class="text-muted" id="count-dislike-${game.id}" style="font-weight:600;">${game.dislikes || 0}</span>
                                 </div>
                             </div>
                         </div>
 
-                        ${game.screenshots && game.screenshots.length > 0 ? `
-                        <div class="mt-5">
-                            <h3>Gallery</h3>
-                            <div class="screenshot-gallery">
-                                ${game.screenshots.map(url => `<img src="${url}" class="gallery-img glass">`).join('')}
-                            </div>
-                        </div>` : ''}
-
-                        <div class="mt-5 glass p-4 rad-lg">
+                        <div class="glass p-4 rad-lg mb-4">
                             <h3><i class="fas fa-comments"></i> Community Comments</h3>
-                            <div class="comment-input-wrapper mt-3 mb-4">
-                                <textarea id="new-comment" class="input-modern" rows="2" placeholder="Leave a review or comment..."></textarea>
-                                <button class="btn-primary mt-2" onclick="postComment('${game.id}')">Post Comment</button>
+                            <div class="comment-input-wrapper mt-3 mb-4" style="display:flex; flex-direction:column; gap:0.5rem;">
+                                <textarea id="new-comment" class="input-modern focusable" rows="2" placeholder="Leave a review..."></textarea>
+                                <button class="btn-primary focusable" id="post-comment-btn" style="align-self:flex-start;" onclick="postComment('${game.id}')">Post Comment</button>
                             </div>
-                            <div class="comments-list">
-                                ${comments.length === 0 ? '<p class="text-muted">No comments yet. Be the first!</p>' : 
+                            <div class="comments-list" id="comments-list-${game.id}">
+                                ${comments.length === 0 ? '<p class="text-muted" id="no-comments-msg">No comments yet. Be the first!</p>' : 
                                   comments.map(c => `
-                                  <div class="comment-item">
+                                  <div class="comment-item fade-in" id="comment-${c.id}">
                                       <div class="c-avatar">${c.authorEmoji || '👾'}</div>
                                       <div class="c-content">
-                                          <div class="c-header"><strong>${sanitizeText(c.authorName || c.email)}</strong> <span class="c-date">${c.createdAt ? new Date(c.createdAt.toMillis()).toLocaleDateString() : 'Just now'}</span></div>
-                                          <p>${sanitizeText(c.text)}</p>
+                                          <div class="c-header"><strong>${sanitizeText(c.authorName || c.email)}</strong> <span class="c-date text-muted" style="font-size:0.8rem; margin-left:8px;">${c.createdAt ? new Date(c.createdAt.toMillis()).toLocaleDateString() : 'Just now'}</span></div>
+                                          <p style="margin-top:0.3rem;">${sanitizeText(c.text)}</p>
+                                          
+                                          <div class="comment-actions mt-2" style="display:flex; gap:0.6rem; align-items:center;">
+                                              <button class="btn-icon focusable" style="width:28px; height:28px; font-size:0.8rem; background:rgba(0,0,0,0.3);" id="c-vote-like-${c.id}" onclick="toggleCommentVote('${c.id}', 'like')">
+                                                  <i class="fas fa-thumbs-up ${(userCommentVotes[c.id]==='like')?'text-accent':''}"></i>
+                                              </button>
+                                              <span class="text-muted" style="font-size:0.85rem; font-weight:600;" id="c-count-like-${c.id}">${c.likes || 0}</span>
+                                              <button class="btn-icon focusable" style="width:28px; height:28px; font-size:0.8rem; background:rgba(0,0,0,0.3);" id="c-vote-dislike-${c.id}" onclick="toggleCommentVote('${c.id}', 'dislike')">
+                                                  <i class="fas fa-thumbs-down ${(userCommentVotes[c.id]==='dislike')?'text-danger':''}"></i>
+                                              </button>
+                                              <span class="text-muted" style="font-size:0.85rem; font-weight:600;" id="c-count-dislike-${c.id}">${c.dislikes || 0}</span>
+                                          </div>
                                       </div>
                                   </div>
                                 `).join('')}
                             </div>
                         </div>
+
+                        <div class="mt-5">
+                            <h3 class="mb-3"><i class="fas fa-compass text-accent"></i> Suggested Games</h3>
+                            <div class="suggested-games">
+                                ${suggestedHtml}
+                            </div>
+                        </div>
                     </div>
                 `;
-            } catch(e) {
-                console.error(e);
-                showToast("Failed to load game details", "error");
-                navigateToStore();
-            }
+                setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
+            } catch(e) { navigateToStore(); }
         };
 
+        // NO RELOAD Toggle Vote
         window.toggleVote = async (gameId, voteType) => {
             if (!window.currentUser) return showToast("Log in to vote", "error");
             
+            // UI Feedback
+            const btn = document.getElementById(`vote-${voteType}-${gameId}`);
+            if(btn) { btn.classList.remove('pop-anim'); void btn.offsetWidth; btn.classList.add('pop-anim'); }
+
             const voteId = `${window.currentUser.uid}_${gameId}`;
             const voteRef = doc(db, "votes", voteId);
             const gameRef = doc(db, "games", gameId);
@@ -586,76 +1030,168 @@
                 const voteSnap = await getDoc(voteRef);
                 let currentVote = voteSnap.exists() ? voteSnap.data().type : null;
 
+                const likeBtn = document.getElementById(`vote-like-${gameId}`);
+                const dislikeBtn = document.getElementById(`vote-dislike-${gameId}`);
+                const likeCountEl = document.getElementById(`count-like-${gameId}`);
+                const dislikeCountEl = document.getElementById(`count-dislike-${gameId}`);
+
+                let likes = parseInt(likeCountEl?.innerText || "0");
+                let dislikes = parseInt(dislikeCountEl?.innerText || "0");
+
                 if (currentVote === voteType) {
-                    // Toggle off the same vote
                     await deleteDoc(voteRef);
                     await updateDoc(gameRef, { [voteType + 's']: increment(-1) });
+                    if(voteType === 'like') { likes--; if(likeBtn) likeBtn.classList.remove('text-accent'); }
+                    if(voteType === 'dislike') { dislikes--; if(dislikeBtn) dislikeBtn.classList.remove('text-danger'); }
                 } else {
-                    // Set new vote
                     await setDoc(voteRef, { gameId, userId: window.currentUser.uid, type: voteType, createdAt: serverTimestamp() });
-                    
                     const updates = { [voteType + 's']: increment(1) };
+                    
+                    if(voteType === 'like') { likes++; if(likeBtn) likeBtn.classList.add('text-accent'); }
+                    if(voteType === 'dislike') { dislikes++; if(dislikeBtn) dislikeBtn.classList.add('text-danger'); }
+
                     if (currentVote) {
-                        updates[currentVote + 's'] = increment(-1); // remove old vote
+                        updates[currentVote + 's'] = increment(-1);
+                        if(currentVote === 'like') { likes--; if(likeBtn) likeBtn.classList.remove('text-accent'); }
+                        if(currentVote === 'dislike') { dislikes--; if(dislikeBtn) dislikeBtn.classList.remove('text-danger'); }
                     }
                     await updateDoc(gameRef, updates);
                 }
                 
-                navigateToGameDetail(gameId); // Refresh to update UI
+                if(likeCountEl) likeCountEl.innerText = Math.max(0, likes);
+                if(dislikeCountEl) dislikeCountEl.innerText = Math.max(0, dislikes);
+
+                // Update cache
+                const gameObj = window.allGames.find(g => g.id === gameId);
+                if(gameObj) { gameObj.likes = Math.max(0, likes); gameObj.dislikes = Math.max(0, dislikes); }
+
+            } catch(e) { showToast("Error updating vote", "error"); }
+        };
+
+        // NO RELOAD Comment Vote
+        window.toggleCommentVote = async (commentId, voteType) => {
+            if (!window.currentUser) return showToast("Log in to vote", "error");
+            
+            const btn = document.getElementById(`c-vote-${voteType}-${commentId}`);
+            if(btn) { btn.classList.remove('pop-anim'); void btn.offsetWidth; btn.classList.add('pop-anim'); }
+
+            const voteId = `${window.currentUser.uid}_${commentId}`;
+            const voteRef = doc(db, "comment_votes", voteId);
+            const commentRef = doc(db, "comments", commentId);
+            
+            try {
+                const voteSnap = await getDoc(voteRef);
+                let currentVote = voteSnap.exists() ? voteSnap.data().type : null;
+
+                const likeIcon = document.querySelector(`#c-vote-like-${commentId} i`);
+                const dislikeIcon = document.querySelector(`#c-vote-dislike-${commentId} i`);
+                const likeCountEl = document.getElementById(`c-count-like-${commentId}`);
+                const dislikeCountEl = document.getElementById(`c-count-dislike-${commentId}`);
+
+                let likes = parseInt(likeCountEl?.innerText || "0");
+                let dislikes = parseInt(dislikeCountEl?.innerText || "0");
+
+                if (currentVote === voteType) {
+                    await deleteDoc(voteRef);
+                    await updateDoc(commentRef, { [voteType + 's']: increment(-1) });
+                    if(voteType === 'like') { likes--; if(likeIcon) likeIcon.classList.remove('text-accent'); }
+                    if(voteType === 'dislike') { dislikes--; if(dislikeIcon) dislikeIcon.classList.remove('text-danger'); }
+                } else {
+                    await setDoc(voteRef, { commentId, userId: window.currentUser.uid, type: voteType, createdAt: serverTimestamp() });
+                    const updates = { [voteType + 's']: increment(1) };
+                    
+                    if(voteType === 'like') { likes++; if(likeIcon) likeIcon.classList.add('text-accent'); }
+                    if(voteType === 'dislike') { dislikes++; if(dislikeIcon) dislikeIcon.classList.add('text-danger'); }
+
+                    if (currentVote) {
+                        updates[currentVote + 's'] = increment(-1);
+                        if(currentVote === 'like') { likes--; if(likeIcon) likeIcon.classList.remove('text-accent'); }
+                        if(currentVote === 'dislike') { dislikes--; if(dislikeIcon) dislikeIcon.classList.remove('text-danger'); }
+                    }
+                    await updateDoc(commentRef, updates);
+                }
+                
+                if(likeCountEl) likeCountEl.innerText = Math.max(0, likes);
+                if(dislikeCountEl) dislikeCountEl.innerText = Math.max(0, dislikes);
+
+            } catch(e) { showToast("Error updating comment vote", "error"); }
+        };
+
+        // NO RELOAD Post Comment
+        window.postComment = async (gameId) => {
+            const input = document.getElementById('new-comment');
+            const text = input.value.trim();
+            const btn = document.getElementById('post-comment-btn');
+            if(!text) return;
+            
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
+            
+            try {
+                const newDoc = await addDoc(collection(db,"comments"), { 
+                    gameId: gameId, userId: window.currentUser.uid, text: text,
+                    authorName: window.currentUser.displayName || "Player", authorEmoji: window.currentUser.photoURL || '👾',
+                    email: window.currentUser.email, createdAt: serverTimestamp(),
+                    likes: 0, dislikes: 0
+                });
+                
+                showToast("Comment posted!", "success");
+                input.value = '';
+                
+                const commentsList = document.getElementById(`comments-list-${gameId}`);
+                const noCommentsMsg = document.getElementById('no-comments-msg');
+                if(noCommentsMsg) noCommentsMsg.remove();
+                
+                const html = `
+                  <div class="comment-item fade-in" id="comment-${newDoc.id}">
+                      <div class="c-avatar">${window.currentUser.photoURL || '👾'}</div>
+                      <div class="c-content">
+                          <div class="c-header"><strong>${sanitizeText(window.currentUser.displayName || window.currentUser.email)}</strong> <span class="c-date text-muted" style="font-size:0.8rem; margin-left:8px;">Just now</span></div>
+                          <p style="margin-top:0.3rem;">${sanitizeText(text)}</p>
+                          <div class="comment-actions mt-2" style="display:flex; gap:0.6rem; align-items:center;">
+                              <button class="btn-icon focusable" style="width:28px; height:28px; font-size:0.8rem; background:rgba(0,0,0,0.3);" id="c-vote-like-${newDoc.id}" onclick="toggleCommentVote('${newDoc.id}', 'like')"><i class="fas fa-thumbs-up"></i></button>
+                              <span class="text-muted" style="font-size:0.85rem; font-weight:600;" id="c-count-like-${newDoc.id}">0</span>
+                              <button class="btn-icon focusable" style="width:28px; height:28px; font-size:0.8rem; background:rgba(0,0,0,0.3);" id="c-vote-dislike-${newDoc.id}" onclick="toggleCommentVote('${newDoc.id}', 'dislike')"><i class="fas fa-thumbs-down"></i></button>
+                              <span class="text-muted" style="font-size:0.85rem; font-weight:600;" id="c-count-dislike-${newDoc.id}">0</span>
+                          </div>
+                      </div>
+                  </div>
+                `;
+                commentsList.insertAdjacentHTML('afterbegin', html);
             } catch(e) { 
-                showToast("Error updating vote", "error"); 
+                showToast("Error posting comment", "error"); 
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Post Comment";
             }
         };
 
-        window.postComment = async (gameId) => {
-            const text = document.getElementById('new-comment').value.trim();
-            if(!text) return;
-            try {
-                await addDoc(collection(db,"comments"), { 
-                    gameId: gameId,
-                    userId: window.currentUser.uid,
-                    text: text,
-                    authorName: window.currentUser.displayName || "Player",
-                    authorEmoji: window.currentUser.photoURL || '👾',
-                    email: window.currentUser.email,
-                    createdAt: serverTimestamp() 
-                });
-                showToast("Comment posted!", "success");
-                navigateToGameDetail(gameId); // reload to show comment
-            } catch(e) { showToast("Error posting comment", "error"); }
-        };
-
         window.launchGame = async (gameId) => {
-            showToast("Initializing environment...", "info");
             const gameDoc = await getDoc(doc(db,"games",gameId));
             if(!gameDoc.exists()) return;
             const game = gameDoc.data();
             
-            // Update last played locally
             if(window.userLibrary.has(gameId)) {
                 const ld = window.userLibrary.get(gameId);
                 ld.lastPlayed = Date.now();
                 window.userLibrary.set(gameId, ld);
-                localStorage.setItem(`arcadeForgeLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
+                localStorage.setItem(`gameLoomLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
             }
 
             const playUrl = game.gameURL || game.gameFileUrl;
-
             if(playUrl) {
                 const modal = document.createElement('div');
                 modal.className = 'fullscreen-modal fade-in';
                 modal.innerHTML = `
                     <div class="game-toolbar glass">
                         <span class="game-title-bar"><i class="fas fa-gamepad"></i> ${sanitizeText(game.title)}</span>
-                        <button class="btn-icon text-muted" onclick="this.closest('.fullscreen-modal').remove(); document.body.style.overflow='auto';"><i class="fas fa-times fa-lg"></i></button>
+                        <button class="btn-icon text-muted focusable" onclick="this.closest('.fullscreen-modal').remove(); document.body.style.overflow='auto'; window.updateFocusables();" style="z-index:99999;"><i class="fas fa-times fa-lg"></i></button>
                     </div>
                     <iframe class="game-iframe" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" src="${playUrl}"></iframe>
                 `;
                 document.body.appendChild(modal);
                 document.body.style.overflow = 'hidden';
-            } else { 
-                showToast("Game executable/URL not found.", "error"); 
-            }
+            } else showToast("Game URL not found.", "error"); 
         };
 
         window.navigateToUpload = () => {
@@ -665,55 +1201,26 @@
                 <div class="fade-in max-w-800 m-auto">
                     <div class="section-header"><h2><i class="fas fa-cloud-upload-alt text-accent"></i> Publish Game</h2></div>
                     <div class="glass p-4 rad-lg upload-form">
-                        <div class="legal-warning mb-4">
-                            <i class="fas fa-gavel"></i> <strong>Publisher Agreement:</strong> Games are hosted via external URLs (like GitHub Pages). You confirm you own all rights or have explicit permission to distribute this content.
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Game Title *</label>
-                            <input type="text" id="up-title" class="input-modern" placeholder="Epic Quest">
-                        </div>
-                        <div class="form-group">
-                            <label>Studio / Creator Name *</label>
-                            <input type="text" id="up-creator" class="input-modern" value="${sanitizeText(window.currentUser.displayName || '')}">
-                        </div>
-                        <div class="form-group">
-                            <label>Description *</label>
-                            <textarea id="up-desc" class="input-modern" rows="4" placeholder="Tell players about your game..."></textarea>
-                        </div>
+                        <div class="legal-warning mb-4"><i class="fas fa-gavel"></i> <strong>Publisher Agreement:</strong> Games are hosted via external URLs. You confirm you own all rights.</div>
+                        <div class="form-group"><label>Game Title *</label><input type="text" id="up-title" class="input-modern focusable"></div>
+                        <div class="form-group"><label>Studio / Creator Name *</label><input type="text" id="up-creator" class="input-modern focusable" value="${sanitizeText(window.currentUser.displayName || '')}"></div>
+                        <div class="form-group"><label>Description *</label><textarea id="up-desc" class="input-modern focusable" rows="4"></textarea></div>
                         <div class="row-2">
-                            <div class="form-group">
-                                <label>Category</label>
-                                <select id="up-category" class="input-modern">
-                                    <option>Action</option><option>Puzzle</option><option>RPG</option><option>Platformer</option><option>Simulation</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Tags (comma separated)</label>
-                                <input type="text" id="up-tags" class="input-modern" placeholder="pixel-art, retro, hard">
-                            </div>
+                            <div class="form-group"><label>Category</label><select id="up-category" class="input-modern focusable"><option>Action</option><option>Puzzle</option><option>RPG</option><option>Platformer</option><option>Simulation</option></select></div>
+                            <div class="form-group"><label>Tags (comma separated)</label><input type="text" id="up-tags" class="input-modern focusable" placeholder="e.g. pixel-art, retro"></div>
                         </div>
-                        
-                        <hr class="subtle-hr">
-                        
-                        <div class="form-group">
-                            <label>Game Icon URL (1:1 Ratio) *</label>
-                            <input type="url" id="up-icon" class="input-modern" placeholder="https://example.com/icon.png">
-                        </div>
+                        <div class="form-group"><label>Game Icon URL (1:1) *</label><input type="url" id="up-icon" class="input-modern focusable" placeholder="https://example.com/icon.png"></div>
                         <div class="form-group">
                             <label>Screenshots URLs (comma separated)</label>
-                            <input type="text" id="up-screenshots" class="input-modern" placeholder="https://example.com/img1.png, https://example.com/img2.png">
+                            <input type="text" id="up-screenshots" class="input-modern focusable" placeholder="https://url1.com/img.png, https://url2.com/img.png">
+                            <small class="text-muted mt-1 d-block">Separate multiple image URLs with commas.</small>
                         </div>
-                        <div class="form-group">
-                            <label>GitHub Game URL *</label>
-                            <input type="url" id="up-file" class="input-modern" placeholder="https://gogi-dev.github.io/game-store/games/game1/index.html">
-                            <small class="text-muted mt-1 d-block">Link directly to the playable HTML file hosted on GitHub Pages or similar external host.</small>
-                        </div>
-                        
-                        <button id="submit-upload-btn" class="btn-primary large w-100 mt-4"><i class="fas fa-rocket"></i> Publish to ArcadeForge</button>
+                        <div class="form-group"><label>GitHub Game URL *</label><input type="url" id="up-file" class="input-modern focusable" placeholder="https://yourname.github.io/game/"></div>
+                        <button id="submit-upload-btn" class="btn-primary large w-100 mt-4 focusable"><i class="fas fa-rocket"></i> Publish to GameLoom</button>
                     </div>
                 </div>
             `;
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
 
             document.getElementById('submit-upload-btn').addEventListener('click', async function() {
                 const title = document.getElementById('up-title').value.trim();
@@ -722,42 +1229,20 @@
                 const cat = document.getElementById('up-category').value;
                 const tags = document.getElementById('up-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
                 const iconUrl = document.getElementById('up-icon').value.trim();
-                const ssRaw = document.getElementById('up-screenshots').value.trim();
-                const ssUrls = ssRaw ? ssRaw.split(',').map(s=>s.trim()).filter(Boolean) : [];
+                const ssUrls = document.getElementById('up-screenshots').value.trim().split(',').map(s=>s.trim()).filter(Boolean);
                 const gameUrl = document.getElementById('up-file').value.trim();
 
-                if(!title || !creator || !desc || !iconUrl || !gameUrl) {
-                    return showToast("Please fill all required fields including URLs.", "error");
-                }
+                if(!title || !creator || !desc || !iconUrl || !gameUrl) return showToast("Fill required fields.", "error");
 
-                this.disabled = true;
-                this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing...';
-                
+                this.disabled = true; this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing...';
                 try {
                     await addDoc(collection(db, "games"), {
-                        title, 
-                        creator, 
-                        description: desc, 
-                        category: cat, 
-                        tags,
-                        iconURL: iconUrl, 
-                        screenshots: ssUrls, 
-                        gameURL: gameUrl,
-                        likes: 0, 
-                        dislikes: 0,
-                        downloads: 0, 
-                        ownerId: window.currentUser.uid,
-                        createdAt: serverTimestamp()
+                        title, creator, description: desc, category: cat, tags, iconURL: iconUrl, screenshots: ssUrls, gameURL: gameUrl,
+                        likes: 0, dislikes: 0, downloads: 0, ownerId: window.currentUser.uid, createdAt: serverTimestamp()
                     });
-
-                    showToast("Game Published Successfully!", "success");
+                    showToast("Game Published!", "success");
                     navigateToMyUploads();
-                } catch(e) {
-                    console.error(e);
-                    showToast("Publish failed", "error");
-                    this.disabled = false;
-                    this.innerHTML = '<i class="fas fa-rocket"></i> Publish to ArcadeForge';
-                }
+                } catch(e) { showToast("Publish failed", "error"); this.disabled = false; this.innerHTML = '<i class="fas fa-rocket"></i> Publish'; }
             });
         };
 
@@ -769,44 +1254,37 @@
                     <div class="section-header"><h2><i class="fas fa-cog text-accent"></i> Preferences</h2></div>
                     <div class="glass p-4 rad-lg mb-4">
                         <h3>Profile</h3>
-                        <div class="settings-row mt-3">
-                            <label>Display Name</label>
-                            <input type="text" id="set-name" class="input-modern" value="${sanitizeText(window.currentUser.displayName || '')}">
-                        </div>
-                        <div class="settings-row mt-3">
-                            <label>Avatar</label>
-                            <div class="emoji-picker-mini" id="set-emoji">
-                                ${['👾','🦊','🤖','👻','🐉','🐱','🦄','😎'].map(e => `
-                                    <span class="emoji-option ${window.currentUser.photoURL === e ? 'active' : ''}" data-emoji="${e}">${e}</span>
-                                `).join('')}
+                        <div class="settings-row mt-3"><label>Display Name</label><input type="text" id="set-name" class="input-modern focusable" value="${sanitizeText(window.currentUser.displayName || '')}"></div>
+                        <div class="settings-row mt-3"><label>Avatar</label>
+                            <div class="emoji-picker-mini" id="set-emoji" style="max-height:150px; overflow-y:auto; gap:0.5rem; justify-content:flex-start;">
+                                ${avatarEmojis.map(e => `<span class="emoji-option focusable ${window.currentUser.photoURL === e ? 'active' : ''}" data-emoji="${e}" tabindex="0">${e}</span>`).join('')}
                             </div>
                         </div>
-                        <button class="btn-primary mt-3" onclick="saveProfile()"><i class="fas fa-save"></i> Save Profile</button>
+                        <button class="btn-primary mt-3 focusable" onclick="saveProfile()"><i class="fas fa-save"></i> Save Profile</button>
                     </div>
 
                     <div class="glass p-4 rad-lg mb-4">
                         <h3>App Settings</h3>
-                        <div class="settings-row mt-3">
-                            <label>Theme</label>
-                            <select id="set-theme" class="input-modern" onchange="updateTheme(this.value)">
+                        <div class="settings-row mt-3"><label>Theme</label>
+                            <select id="set-theme" class="input-modern focusable" onchange="updateTheme(this.value)">
                                 <option value="dark" ${window.userPrefs.theme==='dark'?'selected':''}>Dark Space (Default)</option>
                                 <option value="darker" ${window.userPrefs.theme==='darker'?'selected':''}>Midnight Obsidian</option>
+                                <option value="darkBlueNeon" ${window.userPrefs.theme==='darkBlueNeon'?'selected':''}>Dark Blue Neon</option>
                                 <option value="purple" ${window.userPrefs.theme==='purple'?'selected':''}>Neon Purple</option>
+                                <option value="purpleGradient" ${window.userPrefs.theme==='purpleGradient'?'selected':''}>Purple Gradient</option>
                             </select>
-                        </div>
-                        <div class="settings-row mt-3">
-                            <label>Local Data</label>
-                            <button class="btn-secondary" onclick="localStorage.removeItem('arcadeForgePrefs'); showToast('Cache cleared', 'success');"><i class="fas fa-broom"></i> Clear Prefs</button>
                         </div>
                     </div>
                 </div>
             `;
+            setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
 
             document.querySelectorAll('#set-emoji .emoji-option').forEach(opt => {
                 opt.addEventListener('click', () => {
                     document.querySelectorAll('#set-emoji .emoji-option').forEach(o => o.classList.remove('active'));
                     opt.classList.add('active');
                 });
+                opt.addEventListener('keydown', (e) => { if(e.key==='Enter') opt.click(); });
             });
         };
 
@@ -817,23 +1295,27 @@
                 await updateProfile(window.currentUser, { displayName: name, photoURL: emoji });
                 await updateDoc(doc(db, "users", window.currentUser.uid), { username: name, emoji });
                 showToast("Profile updated", "success");
-                renderApp(); // refresh nav
+                renderApp(); 
             } catch(e) { showToast("Failed to update profile", "error"); }
         };
 
         window.updateTheme = (themeStr) => {
             document.documentElement.setAttribute('data-theme', themeStr);
             window.userPrefs.theme = themeStr;
-            localStorage.setItem('arcadeForgePrefs', JSON.stringify(window.userPrefs));
+            localStorage.setItem('gameLoomPrefs', JSON.stringify(window.userPrefs));
         };
 
         // ========== INIT ==========
         onAuthStateChanged(auth, async (user) => {
             window.currentUser = user;
             if(user) { 
+                checkPrivacyPolicy();
+                initAnalytics();
+                initFocusSystem();
                 await fetchLibrary(); 
                 renderApp(); 
             } else {
+                if(window.presenceInterval) clearInterval(window.presenceInterval);
                 renderAuthScreen();
             }
         });
@@ -855,25 +1337,33 @@
             --font: 'Inter', sans-serif;
             --nav-width: 260px;
         }
-
         [data-theme="darker"] {
             --bg-base: #030508;
             --bg-glass: rgba(10, 12, 16, 0.8);
             --bg-glass-hover: rgba(18, 22, 28, 0.9);
             --border-glass: rgba(255, 255, 255, 0.08);
-            --accent: #e11d48;
-            --accent-hover: #fb7185;
-            --text-muted: #9ca3af;
+            --accent: #e11d48; --accent-hover: #fb7185; --text-muted: #9ca3af;
         }
-
+        [data-theme="darkBlueNeon"] {
+            --bg-base: #010a15;
+            --bg-glass: rgba(4, 20, 40, 0.7);
+            --bg-glass-hover: rgba(8, 30, 60, 0.8);
+            --border-glass: rgba(0, 255, 255, 0.2);
+            --accent: #00e5ff; --accent-hover: #00ffff; --text-muted: #64b5f6; --text-main: #e0f7fa;
+        }
         [data-theme="purple"] {
             --bg-base: #0f0a1e;
             --bg-glass: rgba(25, 15, 45, 0.65);
             --bg-glass-hover: rgba(35, 25, 60, 0.8);
             --border-glass: rgba(187, 72, 255, 0.15);
-            --accent: #8b5cf6;
-            --accent-hover: #a78bfa;
-            --text-muted: #c4b5fd;
+            --accent: #8b5cf6; --accent-hover: #a78bfa; --text-muted: #c4b5fd;
+        }
+        [data-theme="purpleGradient"] {
+            --bg-base: linear-gradient(135deg, #13072e 0%, #3f1052 100%);
+            --bg-glass: rgba(30, 10, 50, 0.5);
+            --bg-glass-hover: rgba(50, 20, 80, 0.7);
+            --border-glass: rgba(255, 100, 255, 0.2);
+            --accent: #d946ef; --accent-hover: #f0abfc; --text-muted: #fbcfe8;
         }
 
         /* === RESET & BASE === */
@@ -884,58 +1374,64 @@
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
+        /* === FOCUS SYSTEM (KEYBOARD/CONTROLLER) === */
+        .focusable:focus, .gamepad-focus { outline: 3px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 15px var(--accent); }
+
         /* === UTILS === */
         .glass { background: var(--bg-glass); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--border-glass); border-radius: 20px; }
-        .text-accent { color: var(--accent); }
-        .text-muted { color: var(--text-muted); }
-        .text-danger { color: var(--danger); }
-        .w-100 { width: 100%; }
+        .text-accent { color: var(--accent); } .text-muted { color: var(--text-muted); } .text-danger { color: var(--danger); } .text-center { text-align: center; }
+        .w-100 { width: 100%; } .flex-1 { flex: 1; }
         .mt-2 { margin-top: 0.5rem; } .mt-3 { margin-top: 1rem; } .mt-4 { margin-top: 1.5rem; } .mt-5 { margin-top: 2rem; }
         .mb-2 { margin-bottom: 0.5rem; } .mb-3 { margin-bottom: 1rem; } .mb-4 { margin-bottom: 1.5rem; }
-        .p-4 { padding: 1.5rem; }
-        .d-block { display: block; }
-        .max-w-800 { max-width: 800px; }
-        .rad-lg { border-radius: 24px; }
+        .p-4 { padding: 1.5rem; } .d-block { display: block; }
+        .max-w-800 { max-width: 800px; } .rad-lg { border-radius: 24px; }
         .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .hidden { display: none !important; }
-        
         .fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
 
+        @keyframes pop { 0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); } }
+        .pop-anim { animation: pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+
         /* === BUTTONS & INPUTS === */
-        button { font-family: var(--font); cursor: pointer; border: none; transition: all 0.2s; outline: none; }
+        button { font-family: var(--font); cursor: pointer; border: none; transition: all 0.2s ease-in-out; outline: none; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; }
         .btn-primary { background: var(--accent); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.2); }
-        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); }
+        .btn-primary:active:not(:disabled) { transform: scale(0.95); }
         .btn-primary.large { padding: 0.8rem 1.8rem; font-size: 1.1rem; }
         .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
-        
-        .btn-secondary { background: rgba(255,255,255,0.1); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; }
+        .btn-secondary { background: rgba(255,255,255,0.1); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; transition: all 0.2s ease-in-out; }
         .btn-secondary:hover { background: rgba(255,255,255,0.15); }
+        .btn-secondary:active { transform: scale(0.95); }
         .btn-secondary.active { background: var(--accent); }
-        
         .btn-text { background: transparent; color: var(--text-muted); font-weight: 500; font-size: 0.95rem; }
         .btn-text:hover { color: var(--text-main); }
-        
-        .btn-icon { background: rgba(255,255,255,0.05); color: white; width: 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; }
+        .btn-icon { background: rgba(255,255,255,0.05); color: white; width: 40px; height: 40px; border-radius: 12px; transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
         .btn-icon:hover { background: rgba(255,255,255,0.15); transform: translateY(-2px); }
+        .btn-icon:active { transform: scale(0.9); }
         .btn-icon.large { width: 48px; height: 48px; font-size: 1.2rem; }
 
-        .input-modern { background: rgba(0,0,0,0.3); border: 1px solid var(--border-glass); border-radius: 12px; padding: 0.8rem 1.2rem; color: white; width: 100%; transition: border-color 0.2s; font-size: 0.95rem; }
-        .input-modern:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(60,110,255,0.1); }
+        .input-modern { background: rgba(0,0,0,0.3); border: 1px solid var(--border-glass); border-radius: 12px; padding: 0.8rem 1.2rem; color: white; width: 100%; transition: border-color 0.2s; font-size: 0.95rem; box-sizing: border-box; }
         .input-modern.slim { padding: 0.5rem 1rem; width: auto; }
+        textarea.input-modern { resize: vertical; }
 
         /* === BADGES === */
         .badge { display: inline-block; padding: 0.3rem 0.6rem; border-radius: 8px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
         .badge-accent { background: rgba(60,110,255,0.15); color: var(--accent); border: 1px solid rgba(60,110,255,0.3); }
         .badge-subtle { background: rgba(255,255,255,0.05); color: var(--text-muted); }
         .card-badge { position: absolute; top: 12px; right: 12px; background: var(--accent); color: white; padding: 0.3rem 0.6rem; border-radius: 8px; font-size: 0.7rem; font-weight: 800; box-shadow: 0 4px 10px rgba(0,0,0,0.3); z-index: 2; }
+        
+        /* Status Dots */
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg-glass); position: absolute; bottom: -2px; right: -2px; z-index: 5; }
+        .status-dot.online { background: var(--success); }
+        .status-dot.offline { background: #6b7280; }
 
         /* === AUTH === */
-        .auth-bg { height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 50% 0%, rgba(60,110,255,0.15), transparent 60%); padding: 1rem; }
+        .auth-bg { height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
         .auth-card { width: 100%; max-width: 420px; padding: 2.5rem; border-radius: 30px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
         .auth-logo { font-size: 2.2rem; font-weight: 800; background: linear-gradient(135deg, #fff, var(--accent)); -webkit-background-clip: text; color: transparent; margin-bottom: 0.2rem; }
         .auth-subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 2rem; }
-        .auth-tabs { display: flex; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 0.3rem; margin-bottom: 1.5rem; }
+        .auth-tabs { display: flex; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 0.3rem; margin-bottom: 1.5rem; gap: 0.3rem; }
         .auth-tab { flex: 1; padding: 0.6rem; background: transparent; border-radius: 10px; color: var(--text-muted); font-weight: 600; }
         .auth-tab.active { background: var(--bg-glass-hover); color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
         .auth-card input { margin-bottom: 1rem; }
@@ -946,29 +1442,27 @@
 
         /* === LAYOUT === */
         .app-layout { display: flex; height: 100vh; overflow: hidden; }
-        .sidebar { width: var(--nav-width); display: flex; flex-direction: column; border-radius: 0; border-top: none; border-bottom: none; border-left: none; border-right: 1px solid var(--border-glass); padding: 1.5rem 1rem; flex-shrink: 0; }
+        .sidebar { width: var(--nav-width); display: flex; flex-direction: column; border-radius: 0; border-top: none; border-bottom: none; border-left: none; border-right: 1px solid var(--border-glass); padding: 1.5rem 1rem; flex-shrink: 0; box-sizing: border-box; }
         .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
         .dynamic-view { flex: 1; overflow-y: auto; padding: 2rem; scroll-behavior: smooth; }
 
         /* === SIDEBAR === */
         .nav-brand { font-size: 1.6rem; font-weight: 800; padding: 0 1rem 2rem 1rem; color: white; display: flex; align-items: center; gap: 0.6rem; }
-        .nav-brand i { color: var(--accent); }
-        .nav-links { flex: 1; display: flex; flex-direction: column; gap: 0.3rem; }
-        .nav-btn { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 1rem; background: transparent; color: var(--text-muted); border-radius: 12px; font-weight: 600; font-size: 1rem; transition: 0.2s; text-align: left; }
-        .nav-btn i { width: 20px; text-align: center; font-size: 1.1rem; }
+        .nav-links { flex: 1; display: flex; flex-direction: column; gap: 0.4rem; }
+        .nav-btn { display: flex; justify-content: flex-start; align-items: center; gap: 1rem; padding: 0.8rem 1rem; background: transparent; color: var(--text-muted); border-radius: 12px; font-weight: 600; font-size: 1rem; transition: 0.2s; text-align: left; }
         .nav-btn:hover { background: rgba(255,255,255,0.05); color: white; }
         .nav-btn.active { background: rgba(60,110,255,0.15); color: var(--accent); }
-        .nav-bottom { border-top: 1px solid var(--border-glass); padding-top: 1rem; margin-top: 1rem; }
+        .nav-bottom { border-top: 1px solid var(--border-glass); padding-top: 1rem; margin-top: 1rem; display: flex; flex-direction: column; gap: 0.4rem;}
         .nav-user { display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem 0.5rem; margin-top: 0.5rem; }
-        .user-avatar { width: 40px; height: 40px; background: rgba(255,255,255,0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; }
-        .user-info { display: flex; flex-direction: column; }
-        .u-name { font-weight: 600; font-size: 0.95rem; }
-        .logout-text { background: transparent; color: var(--text-muted); padding: 0; text-align: left; font-size: 0.8rem; margin-top: 2px; }
+        .user-avatar { width: 40px; height: 40px; background: rgba(255,255,255,0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; flex-shrink:0; }
+        .user-info { display: flex; flex-direction: column; overflow: hidden; }
+        .u-name { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .logout-text { background: transparent; color: var(--text-muted); padding: 0; text-align: left; font-size: 0.8rem; margin-top: 2px; justify-content:flex-start; }
         .logout-text:hover { color: var(--danger); }
 
         /* === TOP BAR === */
-        .top-bar { height: 70px; display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; border-radius: 0; border-top: none; border-left: none; border-right: none; z-index: 10; }
-        .search-wrapper { display: flex; align-items: center; background: rgba(0,0,0,0.3); border-radius: 20px; padding: 0.5rem 1rem; width: 400px; border: 1px solid rgba(255,255,255,0.05); transition: 0.2s; }
+        .top-bar { height: 70px; display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; border-radius: 0; border-top: none; border-left: none; border-right: none; z-index: 10; flex-shrink:0; }
+        .search-wrapper { display: flex; align-items: center; background: rgba(0,0,0,0.3); border-radius: 20px; padding: 0.5rem 1rem; width: 350px; border: 1px solid rgba(255,255,255,0.05); transition: 0.2s; box-sizing: border-box; }
         .search-wrapper:focus-within { border-color: var(--accent); background: rgba(0,0,0,0.5); }
         .search-wrapper i { color: var(--text-muted); margin-right: 0.8rem; }
         .search-wrapper input { background: transparent; border: none; color: white; outline: none; width: 100%; font-size: 0.95rem; }
@@ -983,103 +1477,89 @@
 
         /* === STORE GRID === */
         .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-        .section-header h2 { font-size: 1.5rem; font-weight: 700; }
         .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.5rem; }
         .game-card { overflow: hidden; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); cursor: pointer; display: flex; flex-direction: column; }
         .game-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.5); border-color: rgba(60,110,255,0.4); }
-        .game-image-wrapper { position: relative; height: 160px; overflow: hidden; background: #0f172a; }
+        .game-image-wrapper { position: relative; height: 160px; overflow: hidden; background: #0f172a; flex-shrink:0; }
         .game-image-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s; }
         .game-card:hover .game-image-wrapper img { transform: scale(1.08); }
         .game-info { padding: 1.2rem; flex: 1; display: flex; flex-direction: column; }
-        .game-info h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.2rem; }
-        .creator-name { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.8rem; }
         .game-meta { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); font-weight: 600; margin-top: auto; margin-bottom: 0.8rem; }
         .btn-install { background: rgba(255,255,255,0.05); color: white; padding: 0.6rem; border-radius: 10px; font-weight: 600; transition: 0.2s; }
-        .btn-install:hover { background: var(--accent); }
         .btn-install.installed { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
 
-        /* === LIBRARY LIST === */
+        /* === LIBRARY / UPLOADS LIST === */
         .library-list { display: flex; flex-direction: column; gap: 1rem; }
         .lib-item { display: flex; align-items: center; padding: 1rem; gap: 1.5rem; transition: 0.2s; }
         .lib-item:hover { background: var(--bg-glass-hover); }
-        .lib-thumb { width: 120px; height: 75px; border-radius: 12px; object-fit: cover; background: #0f172a; }
+        .lib-thumb { width: 120px; height: 75px; border-radius: 12px; object-fit: cover; background: #0f172a; flex-shrink:0; }
         .lib-details { flex: 1; }
-        .lib-details h3 { font-size: 1.2rem; margin-bottom: 0.3rem; }
-        .lib-details p { font-size: 0.85rem; color: var(--text-muted); }
         .lib-actions { display: flex; gap: 0.8rem; }
 
-        /* === GAME DETAIL === */
-        .detail-hero { display: flex; gap: 2.5rem; padding: 2.5rem; border-radius: 30px; align-items: flex-start; flex-wrap: wrap; }
-        .detail-icon { width: 280px; height: 280px; border-radius: 24px; object-fit: cover; box-shadow: 0 20px 40px rgba(0,0,0,0.4); flex-shrink: 0; background: #0f172a; }
-        .detail-main-info { flex: 1; min-width: 300px; }
-        .detail-main-info h1 { font-size: 2.8rem; font-weight: 800; line-height: 1.2; margin-bottom: 0.5rem; }
+        /* === GAME DETAIL (NEW LAYOUT) === */
+        .game-preview-container { position: relative; width: 100%; border-radius: 24px; overflow: hidden; background: #000; min-height: 400px; display: flex; align-items: center; justify-content: center; margin-bottom: 2rem; }
+        .play-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 2; cursor: pointer; transition: background 0.3s; background: rgba(0,0,0,0.2); }
+        .play-overlay:hover { background: rgba(0,0,0,0.5); }
+        .play-overlay:hover button { transform: scale(1.05); }
+        
         .tags-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
         .detail-desc { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; white-space: pre-line; }
-        .screenshot-gallery { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; margin-top: 1rem; scroll-snap-type: x mandatory; }
-        .gallery-img { height: 200px; border-radius: 16px; object-fit: cover; scroll-snap-align: start; flex-shrink: 0; }
-        .comment-item { display: flex; gap: 1rem; padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 16px; margin-bottom: 0.8rem; }
+        
+        .screenshot-gallery { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; margin-top: 1rem; scroll-behavior: smooth; }
+        .gallery-img { height: 200px; width: auto; max-width: 90vw; border-radius: 16px; object-fit: cover; border: 1px solid var(--border-glass); flex-shrink:0; }
+        
+        .comment-item { display: flex; gap: 1rem; padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 16px; margin-bottom: 0.8rem; transition: all 0.3s ease; }
         .c-avatar { font-size: 1.8rem; width: 48px; height: 48px; background: rgba(255,255,255,0.05); border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-        .c-content { flex: 1; }
-        .c-header { display: flex; justify-content: space-between; margin-bottom: 0.3rem; }
-        .c-date { font-size: 0.8rem; color: var(--text-muted); }
+        .c-content { flex: 1; display:flex; flex-direction:column; justify-content:center; }
+        
+        .msg-status { font-size:0.7rem; text-align:right; margin-top:4px; opacity:0.7; }
+        
+        .suggested-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
 
         /* === PUBLISHER DASHBOARD & UPLOAD === */
         .stats-row { display: flex; gap: 1.5rem; }
         .stat-card { flex: 1; padding: 1.5rem; border-radius: 20px; text-align: center; }
-        .stat-card h4 { color: var(--text-muted); font-weight: 500; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
-        .stat-card h2 { font-size: 2.5rem; font-weight: 800; color: var(--accent); }
         .upload-form .form-group { margin-bottom: 1.5rem; }
         .upload-form label { display: block; font-weight: 600; margin-bottom: 0.5rem; color: #cbd5e1; font-size: 0.95rem; }
         .upload-form .row-2 { display: flex; gap: 1.5rem; }
         .upload-form .row-2 > div { flex: 1; }
-        .subtle-hr { border: none; border-top: 1px solid var(--border-glass); margin: 2rem 0; }
-        .legal-warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: #fcd34d; padding: 1rem 1.5rem; border-radius: 12px; font-size: 0.9rem; line-height: 1.5; }
+        .legal-warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: #fcd34d; padding: 1rem 1.5rem; border-radius: 12px; font-size: 0.9rem; }
 
-        /* === GAME PLAYER MODAL === */
-        .fullscreen-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-index: 9999; display: flex; flex-direction: column; }
-        .game-toolbar { height: 50px; display: flex; justify-content: space-between; align-items: center; padding: 0 1.5rem; border-radius: 0; border-bottom: 1px solid rgba(255,255,255,0.1); background: #0a0f1e; }
-        .game-title-bar { font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
+        /* === GAME PLAYER MODAL (Legacy) === */
+        .fullscreen-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; flex-direction: column; justify-content:center; backdrop-filter:blur(8px); }
+        .game-toolbar { height: 50px; display: flex; justify-content: space-between; align-items: center; padding: 0 1.5rem; border-radius: 0; border-bottom: 1px solid rgba(255,255,255,0.1); background: #0a0f1e; flex-shrink:0; }
         .game-iframe { flex: 1; width: 100%; border: none; background: #000; }
 
-        /* === LOADERS & UTILS === */
+        /* === LOADERS & NOTIFICATIONS === */
         .loader-container { padding: 1rem 0; }
         .skeleton-banner { height: 380px; border-radius: 30px; background: linear-gradient(90deg, rgba(255,255,255,0.02) 25%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0.02) 75%); background-size: 200% 100%; animation: shimmer 2s infinite; }
         .skeleton-card { height: 280px; border-radius: 20px; background: linear-gradient(90deg, rgba(255,255,255,0.02) 25%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0.02) 75%); background-size: 200% 100%; animation: shimmer 2s infinite; }
         @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
         
-        .global-toast { position: fixed; bottom: 30px; right: 30px; background: var(--bg-glass); backdrop-filter: blur(12px); border: 1px solid var(--border-glass); padding: 1rem 1.5rem; border-radius: 16px; color: white; z-index: 10000; font-weight: 500; display: flex; align-items: center; gap: 0.8rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5); transform: translateY(100px) scale(0.9); opacity: 0; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); pointer-events: none; }
-        .global-toast.show { transform: translateY(0) scale(1); opacity: 1; }
-        .global-toast.success i { color: var(--success); font-size: 1.2rem; }
-        .global-toast.error i { color: var(--danger); font-size: 1.2rem; }
-        .global-toast.info i { color: var(--accent); font-size: 1.2rem; }
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+        .global-toast { background: var(--bg-glass); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--border-glass); padding: 1rem 1.5rem; border-radius: 16px; color: white; display: flex; align-items: center; gap: 0.8rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5); transform: translateX(120%); opacity: 0; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); pointer-events: auto; }
+        .global-toast.show { transform: translateX(0); opacity: 1; }
+        .global-toast.success i { color: var(--success); } .global-toast.error i { color: var(--danger); }
 
         /* === RESPONSIVE === */
         @media (max-width: 900px) {
-            .detail-hero { flex-direction: column; align-items: center; text-align: center; }
-            .detail-actions { justify-content: center; }
-            .tags-row { justify-content: center; }
+            .detail-main-info { flex-direction: column; }
+            .detail-actions { width: 100%; }
             .upload-form .row-2 { flex-direction: column; gap: 0; }
         }
         @media (max-width: 768px) {
             .app-layout { flex-direction: column; }
-            .sidebar { width: 100%; height: auto; flex-direction: row; align-items: center; padding: 1rem; border-right: none; border-bottom: 1px solid var(--border-glass); overflow-x: auto; }
-            .nav-brand { padding: 0; margin-right: 2rem; }
-            .nav-brand span { display: none; }
-            .nav-links { flex-direction: row; gap: 0.5rem; }
-            .nav-btn { padding: 0.5rem; justify-content: center; white-space: nowrap; }
-            .nav-btn span { display: none; }
-            .nav-bottom { margin-top: 0; padding-top: 0; border-top: none; display: flex; align-items: center; margin-left: auto; border-left: 1px solid var(--border-glass); padding-left: 1rem; }
+            .sidebar { width: 100%; height: auto; flex-direction: row; align-items: center; padding: 1rem; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border-glass); }
+            .nav-brand { margin-right: 1rem; } .nav-brand span { display: none; }
+            .nav-links { flex-direction: row; } .nav-btn { padding: 0.5rem; } .nav-btn span { display: none; }
+            .nav-bottom { margin-top: 0; padding-top: 0; border-top: none; display: flex; flex-direction:row; border-left: 1px solid var(--border-glass); padding-left: 1rem; }
             .user-info { display: none; }
-            .top-bar { padding: 0 1rem; }
-            .search-wrapper { width: 100%; max-width: 300px; }
-            .dynamic-view { padding: 1rem; }
-            .hero-carousel { padding: 2rem; height: auto; min-height: 300px; }
-            .hero-title { font-size: 2rem; }
+            .search-wrapper { max-width: 200px; }
+            .stats-badges { display:none !important; }
         }
     </style>
 </head>
 <body>
     <div id="app-root"></div>
-    <div id="global-toast" class="global-toast"></div>
 </body>
 </html>
