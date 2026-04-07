@@ -1,0 +1,1085 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>ArcadeForge · Premium HTML Game Marketplace</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script type="module">
+        /*
+         * ⚠️ FIRESTORE SECURITY RULES (IMPORTANT)
+         * For this app to function correctly, you need to set your Firestore rules to allow read/write access.
+         * For testing/development, you can use test mode rules in the Firebase Console:
+         * * rules_version = '2';
+         * service cloud.firestore {
+         * match /databases/{database}/documents {
+         * match /{document=**} {
+         * allow read, write: if true; // Note: In production, secure this with request.auth != null
+         * }
+         * }
+         * }
+         */
+
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, query, where, orderBy, limit, increment, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        
+        // ========== 🔥 FIREBASE CONFIG (UPDATED WITH PROVIDED CREDS) ==========
+        const firebaseConfig = {
+            apiKey: "AIzaSyCy5ppRbcHMV1YKtqsrbrwA3GlS3b0P7O8",
+            authDomain: "game-store-6779b.firebaseapp.com",
+            projectId: "game-store-6779b",
+            storageBucket: "game-store-6779b.firebasestorage.app",
+            messagingSenderId: "962209191071",
+            appId: "1:962209191071:web:6282529b333749cdee3eaa"
+        };
+        
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Globals for inline handlers
+        window.auth = auth;
+        window.db = db;
+        window.signOut = signOut;
+        
+        // App State
+        window.currentUser = null;
+        window.currentView = "store";
+        window.allGames = [];
+        window.userLibrary = new Map(); // map of gameId -> libraryData (including lastPlayed)
+        window.userPrefs = JSON.parse(localStorage.getItem('arcadeForgePrefs')) || { theme: 'dark' };
+
+        // Apply theme early
+        document.documentElement.setAttribute('data-theme', window.userPrefs.theme);
+        
+        const appContainer = document.getElementById('app-root');
+        
+        window.showToast = (message, type = "info") => {
+            const toast = document.getElementById('global-toast');
+            toast.innerHTML = `<i class="fas ${type === 'error' ? 'fa-exclamation-circle' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle'}"></i> ${message}`;
+            toast.className = `global-toast ${type} show`;
+            setTimeout(() => toast.classList.remove('show'), 4000);
+        };
+        
+        function sanitizeText(str) {
+            if (!str) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // ========== RENDER ENGINE ==========
+        function renderApp() {
+            if (!window.currentUser) {
+                renderAuthScreen();
+                return;
+            }
+            appContainer.innerHTML = `
+                <div class="app-layout fade-in">
+                    <nav class="sidebar glass">
+                        <div class="nav-brand"><i class="fas fa-gamepad"></i> ArcadeForge</div>
+                        <div class="nav-links">
+                            <button class="nav-btn active" data-nav="store"><i class="fas fa-store"></i> Store</button>
+                            <button class="nav-btn" data-nav="library"><i class="fas fa-layer-group"></i> Library</button>
+                            <button class="nav-btn" data-nav="uploads"><i class="fas fa-laptop-code"></i> My Uploads</button>
+                            <button class="nav-btn" data-nav="upload"><i class="fas fa-cloud-upload-alt"></i> Publish</button>
+                        </div>
+                        <div class="nav-bottom">
+                            <button class="nav-btn" data-nav="settings"><i class="fas fa-cog"></i> Settings</button>
+                            <div class="nav-user">
+                                <div class="user-avatar">${window.currentUser.photoURL || '👾'}</div>
+                                <div class="user-info">
+                                    <span class="u-name">${sanitizeText(window.currentUser.displayName || 'Player')}</span>
+                                    <button id="logout-btn" class="logout-text">Logout</button>
+                                </div>
+                            </div>
+                        </div>
+                    </nav>
+                    <main class="main-content">
+                        <header class="top-bar glass">
+                            <div class="search-wrapper">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="global-search" placeholder="Search games, categories, creators...">
+                            </div>
+                            <div class="top-actions">
+                                <button class="icon-btn" title="Notifications"><i class="fas fa-bell"></i></button>
+                            </div>
+                        </header>
+                        <div id="dynamic-view" class="dynamic-view"></div>
+                    </main>
+                </div>
+            `;
+            
+            document.getElementById('logout-btn')?.addEventListener('click', () => { signOut(auth); });
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const view = btn.dataset.nav;
+                    if (view === 'store') navigateToStore();
+                    else if (view === 'library') navigateToLibrary();
+                    else if (view === 'uploads') navigateToMyUploads();
+                    else if (view === 'upload') navigateToUpload();
+                    else if (view === 'settings') navigateToSettings();
+                });
+            });
+
+            document.getElementById('global-search')?.addEventListener('keyup', (e) => {
+                // Live search connection
+                window.searchQuery = e.target.value;
+                if (window.currentView === 'store') {
+                    // Quick debounce for live update
+                    clearTimeout(window.searchTimeout);
+                    window.searchTimeout = setTimeout(() => {
+                        updateStoreSortAndSearch();
+                    }, 300);
+                } else if (e.key === 'Enter') {
+                    navigateToStore();
+                }
+            });
+
+            if (window.currentView === "store") navigateToStore();
+            else if (window.currentView === "library") navigateToLibrary();
+            else navigateToStore();
+        }
+
+        // ========== AUTH SCREEN ==========
+        function renderAuthScreen() {
+            appContainer.innerHTML = `
+                <div class="auth-bg">
+                    <div class="auth-container fade-in">
+                        <div class="auth-card glass">
+                            <div class="auth-logo"><i class="fas fa-gamepad"></i> ArcadeForge</div>
+                            <p class="auth-subtitle">The Premium HTML Game Marketplace</p>
+                            <div class="auth-tabs">
+                                <button id="auth-login-tab" class="auth-tab active">Login</button>
+                                <button id="auth-signup-tab" class="auth-tab">Sign Up</button>
+                            </div>
+                            <div id="auth-form-area">
+                                <input type="email" id="auth-email" class="input-modern" placeholder="Email Address">
+                                <input type="password" id="auth-password" class="input-modern" placeholder="Password">
+                                <input type="text" id="auth-username" class="input-modern hidden" placeholder="Username">
+                                <div id="emoji-picker-container" class="hidden">
+                                    <label class="form-label">Choose Avatar</label>
+                                    <div class="emoji-picker-mini">
+                                        <span class="emoji-option active" data-emoji="👾">👾</span>
+                                        <span class="emoji-option" data-emoji="🦊">🦊</span>
+                                        <span class="emoji-option" data-emoji="🤖">🤖</span>
+                                        <span class="emoji-option" data-emoji="👻">👻</span>
+                                        <span class="emoji-option" data-emoji="🐉">🐉</span>
+                                    </div>
+                                </div>
+                                <button id="auth-action-btn" class="btn-primary w-100 mt-3">Enter Arcade <i class="fas fa-arrow-right"></i></button>
+                            </div>
+                            <div class="legal-note mt-3"><i class="fas fa-shield-alt"></i> Safe, sandboxed, and curated.</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            let isLogin = true;
+            let selectedEmoji = "👾";
+
+            const toggleMode = (login) => {
+                isLogin = login;
+                document.getElementById('auth-login-tab').classList.toggle('active', login);
+                document.getElementById('auth-signup-tab').classList.toggle('active', !login);
+                document.getElementById('auth-username').classList.toggle('hidden', login);
+                document.getElementById('emoji-picker-container').classList.toggle('hidden', login);
+                document.getElementById('auth-action-btn').innerHTML = login ? 'Enter Arcade <i class="fas fa-arrow-right"></i>' : 'Create Account';
+            };
+
+            document.getElementById('auth-login-tab').addEventListener('click', () => toggleMode(true));
+            document.getElementById('auth-signup-tab').addEventListener('click', () => toggleMode(false));
+
+            document.querySelectorAll('.emoji-option').forEach(opt => {
+                opt.addEventListener('click', () => {
+                    document.querySelectorAll('.emoji-option').forEach(o => o.classList.remove('active'));
+                    opt.classList.add('active');
+                    selectedEmoji = opt.dataset.emoji;
+                });
+            });
+
+            document.getElementById('auth-action-btn').addEventListener('click', async () => {
+                const email = document.getElementById('auth-email').value;
+                const pwd = document.getElementById('auth-password').value;
+                const btn = document.getElementById('auth-action-btn');
+                
+                if (!email || !pwd) return showToast("Please fill all fields", "error");
+                
+                btn.disabled = true;
+                btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Processing...`;
+
+                try {
+                    if (isLogin) {
+                        await signInWithEmailAndPassword(auth, email, pwd);
+                        showToast("Welcome back!", "success");
+                    } else {
+                        const username = document.getElementById('auth-username').value;
+                        if(!username) throw new Error("Username required");
+                        const cred = await createUserWithEmailAndPassword(auth, email, pwd);
+                        await updateProfile(cred.user, { displayName: username, photoURL: selectedEmoji });
+                        // Save user in users collection
+                        await setDoc(doc(db, "users", cred.user.uid), { uid: cred.user.uid, username, email, emoji: selectedEmoji, createdAt: serverTimestamp() });
+                        showToast("Account created successfully!", "success");
+                    }
+                } catch(e) { 
+                    showToast(e.message.replace('Firebase: ', ''), "error"); 
+                    btn.disabled = false;
+                    btn.innerHTML = isLogin ? 'Enter Arcade <i class="fas fa-arrow-right"></i>' : 'Create Account';
+                }
+            });
+        }
+
+        // ========== DATA LAYER ==========
+        async function fetchGames() {
+            try {
+                const q = query(collection(db, "games"), orderBy("createdAt", "desc"));
+                const snap = await getDocs(q);
+                window.allGames = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            } catch (e) {
+                console.error(e);
+                if(window.allGames.length === 0) showToast("Could not load games (check DB rules)", "error");
+            }
+        }
+
+        async function fetchLibrary() {
+            // Using localStorage for Library as requested
+            if (!window.currentUser) return;
+            try {
+                const localData = localStorage.getItem(`arcadeForgeLibrary_${window.currentUser.uid}`);
+                const libItems = localData ? JSON.parse(localData) : [];
+                window.userLibrary.clear();
+                libItems.forEach(item => window.userLibrary.set(item.gameId, item));
+            } catch(e) { console.error("Library fetch error", e); }
+        }
+
+        // ========== VIEWS ==========
+        function showLoader(container) {
+            container.innerHTML = `
+                <div class="loader-container fade-in">
+                    <div class="skeleton-banner"></div>
+                    <div class="games-grid mt-3">
+                        <div class="skeleton-card"></div><div class="skeleton-card"></div>
+                        <div class="skeleton-card"></div><div class="skeleton-card"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        window.updateStoreSortAndSearch = () => {
+            const sq = window.searchQuery ? window.searchQuery.toLowerCase() : "";
+            let filtered = window.allGames.filter(g => !sq || g.title?.toLowerCase().includes(sq) || g.tags?.some(t=>t.toLowerCase().includes(sq)));
+            const sortVal = document.getElementById('sort-select')?.value || 'newest';
+            
+            if(sortVal === 'popular') filtered.sort((a,b)=>(b.likes||0)-(a.likes||0));
+            else filtered.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+            
+            const grid = document.getElementById('games-grid');
+            if(!grid) return;
+            if(filtered.length === 0) {
+                grid.innerHTML = `<div class="empty-state glass"><h3>No games found</h3><p>Try adjusting your search.</p></div>`;
+                return;
+            }
+            grid.innerHTML = filtered.map(game => {
+                const isInstalled = window.userLibrary.has(game.id);
+                const isNew = (Date.now() - (game.createdAt?.toMillis() || 0)) < 604800000; // 7 days
+                return `
+                <div class="game-card glass" onclick="navigateToGameDetail('${game.id}')">
+                    <div class="game-image-wrapper">
+                        <img src="${game.iconURL || game.iconUrl || 'https://placehold.co/400x300/1e293b/ffffff?text=🎮'}" loading="lazy">
+                        ${isNew ? '<span class="card-badge">NEW</span>' : ''}
+                    </div>
+                    <div class="game-info">
+                        <h3 class="truncate">${sanitizeText(game.title)}</h3>
+                        <p class="creator-name">by ${sanitizeText(game.creator)}</p>
+                        <div class="game-meta">
+                            <span><i class="fas fa-thumbs-up text-accent"></i> ${game.likes || 0}</span>
+                            <span><i class="fas fa-thumbs-down text-danger"></i> ${game.dislikes || 0}</span>
+                        </div>
+                        <button class="btn-install w-100 mt-2 ${isInstalled ? 'installed' : ''}" onclick="event.stopPropagation(); toggleInstall('${game.id}')">
+                            ${isInstalled ? '<i class="fas fa-check"></i> In Library' : '<i class="fas fa-download"></i> Add to Library'}
+                        </button>
+                    </div>
+                </div>
+            `}).join('');
+        };
+
+        window.navigateToStore = async () => {
+            window.currentView = "store";
+            const viewDiv = document.getElementById('dynamic-view');
+            showLoader(viewDiv);
+            await fetchGames();
+            await fetchLibrary();
+            
+            const games = window.allGames;
+            const featured = [...games].sort((a,b)=>(b.likes||0)-(a.likes||0)).slice(0, 3);
+            const sq = window.searchQuery ? window.searchQuery.toLowerCase() : "";
+
+            viewDiv.innerHTML = `
+                <div class="fade-in">
+                    ${featured.length > 0 && !sq ? `
+                    <div class="hero-carousel glass">
+                        <div class="hero-content">
+                            <span class="badge badge-accent">Featured</span>
+                            <h1 class="hero-title">${sanitizeText(featured[0].title)}</h1>
+                            <p class="hero-desc">${sanitizeText(featured[0].description).substring(0, 150)}...</p>
+                            <div class="hero-actions">
+                                <button class="btn-primary" onclick="navigateToGameDetail('${featured[0].id}')">View Details</button>
+                            </div>
+                        </div>
+                        <div class="hero-image" style="background-image: url('${featured[0].screenshots?.[0] || featured[0].iconURL || featured[0].iconUrl || 'https://placehold.co/800x400/111827/ffffff?text=No+Image'}')"></div>
+                    </div>` : ''}
+                    
+                    <div class="section-header mt-4">
+                        <h2>${sq ? `Search Results for "${sq}"` : 'Discover Games'}</h2>
+                        <div class="filters">
+                            <select id="sort-select" class="input-modern slim">
+                                <option value="newest">Newest Releases</option>
+                                <option value="popular">Most Popular</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="games-grid" id="games-grid"></div>
+                </div>
+            `;
+
+            document.getElementById('sort-select')?.addEventListener('change', updateStoreSortAndSearch);
+            updateStoreSortAndSearch();
+        };
+
+        window.navigateToLibrary = async () => {
+            window.currentView = "library";
+            const viewDiv = document.getElementById('dynamic-view');
+            showLoader(viewDiv);
+            await fetchGames();
+            await fetchLibrary();
+
+            const libGames = window.allGames.filter(g => window.userLibrary.has(g.id));
+            // Sort by recently played locally
+            libGames.sort((a,b) => (window.userLibrary.get(b.id).lastPlayed || 0) - (window.userLibrary.get(a.id).lastPlayed || 0));
+
+            viewDiv.innerHTML = `
+                <div class="fade-in">
+                    <div class="section-header"><h2><i class="fas fa-layer-group text-accent"></i> My Library</h2></div>
+                    ${libGames.length === 0 ? `
+                        <div class="empty-state glass">
+                            <i class="fas fa-box-open fa-3x mb-3 text-muted"></i>
+                            <h3>Your library is empty</h3>
+                            <p>Head over to the Store to discover amazing games.</p>
+                            <button class="btn-primary mt-3" onclick="navigateToStore()">Go to Store</button>
+                        </div>
+                    ` : `
+                        <div class="library-list">
+                            ${libGames.map(game => {
+                                const libData = window.userLibrary.get(game.id);
+                                const lastPlayedStr = libData.lastPlayed ? new Date(libData.lastPlayed).toLocaleDateString() : 'Never';
+                                return `
+                                <div class="lib-item glass">
+                                    <img src="${game.iconURL || game.iconUrl}" class="lib-thumb" onerror="this.src='https://placehold.co/100x100/1e293b/ffffff?text=🎮'">
+                                    <div class="lib-details">
+                                        <h3>${sanitizeText(game.title)}</h3>
+                                        <p>Last played: ${lastPlayedStr}</p>
+                                    </div>
+                                    <div class="lib-actions">
+                                        <button class="btn-primary" onclick="launchGame('${game.id}')"><i class="fas fa-play"></i> Play</button>
+                                        <button class="btn-icon" title="Remove" onclick="toggleInstall('${game.id}', true)"><i class="fas fa-trash"></i></button>
+                                    </div>
+                                </div>
+                                `
+                            }).join('')}
+                        </div>
+                    `}
+                </div>
+            `;
+        };
+
+        window.navigateToMyUploads = async () => {
+            window.currentView = "uploads";
+            const viewDiv = document.getElementById('dynamic-view');
+            showLoader(viewDiv);
+            await fetchGames();
+            
+            const myGames = window.allGames.filter(g => g.ownerId === window.currentUser.uid);
+            
+            viewDiv.innerHTML = `
+                <div class="fade-in">
+                    <div class="section-header">
+                        <h2><i class="fas fa-laptop-code text-accent"></i> Publisher Dashboard</h2>
+                        <button class="btn-primary" onclick="navigateToUpload()"><i class="fas fa-plus"></i> New Game</button>
+                    </div>
+                    ${myGames.length === 0 ? `
+                        <div class="empty-state glass">
+                            <i class="fas fa-upload fa-3x mb-3 text-muted"></i>
+                            <h3>No uploads yet</h3>
+                            <p>Share your creations with the community!</p>
+                        </div>
+                    ` : `
+                        <div class="stats-row mb-4">
+                            <div class="stat-card glass">
+                                <h4>Total Views/Downloads</h4>
+                                <h2>${myGames.reduce((acc, g) => acc + (g.downloads || 0), 0)}</h2>
+                            </div>
+                            <div class="stat-card glass">
+                                <h4>Total Likes</h4>
+                                <h2>${myGames.reduce((acc, g) => acc + (g.likes || 0), 0)}</h2>
+                            </div>
+                        </div>
+                        <div class="games-grid">
+                            ${myGames.map(game => `
+                                <div class="game-card glass" onclick="navigateToGameDetail('${game.id}')">
+                                    <div class="game-image-wrapper"><img src="${game.iconURL || game.iconUrl}" loading="lazy"></div>
+                                    <div class="game-info">
+                                        <h3 class="truncate">${sanitizeText(game.title)}</h3>
+                                        <div class="game-meta mt-2">
+                                            <span><i class="fas fa-download"></i> ${game.downloads||0}</span>
+                                            <span class="badge badge-accent">Manage</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `}
+                </div>
+            `;
+        };
+
+        window.toggleInstall = async (gameId, forceRemove = false) => {
+            if(!window.currentUser) return;
+            const exists = window.userLibrary.has(gameId);
+            
+            try {
+                if(exists || forceRemove) {
+                    if(forceRemove && !confirm("Remove from library?")) return;
+                    window.userLibrary.delete(gameId);
+                    showToast("Removed from library", "info");
+                } else {
+                    const gameData = window.allGames.find(g => g.id === gameId);
+                    const gameURL = gameData?.gameURL || gameData?.gameFileUrl;
+                    window.userLibrary.set(gameId, { gameId, gameURL, addedAt: Date.now(), lastPlayed: null });
+                    showToast("Added to library!", "success");
+                    // Update downloads count purely for metrics
+                    await updateDoc(doc(db,"games",gameId), { downloads: increment(1) });
+                }
+                
+                // Save to localStorage
+                localStorage.setItem(`arcadeForgeLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
+                
+                // Refresh current view slightly
+                if(window.currentView === 'store') {
+                    const btn = document.querySelector(`.btn-install[onclick*="${gameId}"]`);
+                    if(btn) {
+                        const nowInstalled = !exists;
+                        btn.className = `btn-install w-100 mt-2 ${nowInstalled ? 'installed' : ''}`;
+                        btn.innerHTML = nowInstalled ? '<i class="fas fa-check"></i> In Library' : '<i class="fas fa-download"></i> Add to Library';
+                    }
+                } else if(window.currentView === 'library') {
+                    navigateToLibrary();
+                } else if(window.currentView === 'gameDetail') {
+                    navigateToGameDetail(gameId);
+                }
+            } catch(e) { showToast("Error updating library", "error"); }
+        };
+
+        window.navigateToGameDetail = async (gameId) => {
+            window.currentView = "gameDetail";
+            const viewDiv = document.getElementById('dynamic-view');
+            showLoader(viewDiv);
+            
+            try {
+                const gameSnap = await getDoc(doc(db,"games",gameId));
+                if(!gameSnap.exists()) { navigateToStore(); return; }
+                const game = {id: gameSnap.id, ...gameSnap.data()};
+                
+                const commentsSnap = await getDocs(query(collection(db,"comments"), where("gameId", "==", gameId)));
+                // Sort client side because where + orderBy requires composite index
+                const comments = commentsSnap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+                
+                const voteRef = doc(db,"votes", `${window.currentUser.uid}_${gameId}`);
+                const voteSnap = await getDoc(voteRef);
+                const userVote = voteSnap.exists() ? voteSnap.data().type : null; // 'like' or 'dislike'
+                const isInstalled = window.userLibrary.has(gameId);
+
+                viewDiv.innerHTML = `
+                    <div class="fade-in">
+                        <button class="btn-text mb-3" onclick="navigateToStore()"><i class="fas fa-arrow-left"></i> Back to Store</button>
+                        
+                        <div class="detail-hero glass">
+                            <img src="${game.iconURL || game.iconUrl}" class="detail-icon" onerror="this.src='https://placehold.co/400x400/1e293b/ffffff?text=🎮'">
+                            <div class="detail-main-info">
+                                <h1>${sanitizeText(game.title)}</h1>
+                                <p class="creator-name mb-2">Developed by <strong>${sanitizeText(game.creator)}</strong></p>
+                                <div class="tags-row mb-3">
+                                    <span class="badge badge-accent">${sanitizeText(game.category || 'Game')}</span>
+                                    ${(game.tags||[]).slice(0,3).map(t => `<span class="badge badge-subtle">${sanitizeText(t)}</span>`).join('')}
+                                </div>
+                                <p class="detail-desc">${sanitizeText(game.description)}</p>
+                                
+                                <div class="detail-actions mt-4" style="display:flex; align-items:center; gap: 1rem;">
+                                    <button class="btn-primary large" onclick="launchGame('${game.id}')"><i class="fas fa-play"></i> Play Now</button>
+                                    <button class="btn-secondary large ${isInstalled ? 'active' : ''}" onclick="toggleInstall('${game.id}')">
+                                        ${isInstalled ? '<i class="fas fa-check"></i> Library' : '<i class="fas fa-plus"></i> Library'}
+                                    </button>
+                                    
+                                    <div style="display:flex; align-items:center; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 0.2rem;">
+                                        <button class="btn-icon ${userVote === 'like' ? 'text-accent' : ''}" onclick="toggleVote('${game.id}', 'like')" id="like-btn" title="Like">
+                                            <i class="fas fa-thumbs-up"></i>
+                                        </button>
+                                        <span class="text-muted" style="margin: 0 0.5rem; font-weight:600;">${game.likes || 0}</span>
+                                        <button class="btn-icon ${userVote === 'dislike' ? 'text-danger' : ''}" onclick="toggleVote('${game.id}', 'dislike')" id="dislike-btn" title="Dislike">
+                                            <i class="fas fa-thumbs-down"></i>
+                                        </button>
+                                        <span class="text-muted" style="margin: 0 0.5rem 0 0.2rem; font-weight:600;">${game.dislikes || 0}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        ${game.screenshots && game.screenshots.length > 0 ? `
+                        <div class="mt-5">
+                            <h3>Gallery</h3>
+                            <div class="screenshot-gallery">
+                                ${game.screenshots.map(url => `<img src="${url}" class="gallery-img glass">`).join('')}
+                            </div>
+                        </div>` : ''}
+
+                        <div class="mt-5 glass p-4 rad-lg">
+                            <h3><i class="fas fa-comments"></i> Community Comments</h3>
+                            <div class="comment-input-wrapper mt-3 mb-4">
+                                <textarea id="new-comment" class="input-modern" rows="2" placeholder="Leave a review or comment..."></textarea>
+                                <button class="btn-primary mt-2" onclick="postComment('${game.id}')">Post Comment</button>
+                            </div>
+                            <div class="comments-list">
+                                ${comments.length === 0 ? '<p class="text-muted">No comments yet. Be the first!</p>' : 
+                                  comments.map(c => `
+                                  <div class="comment-item">
+                                      <div class="c-avatar">${c.authorEmoji || '👾'}</div>
+                                      <div class="c-content">
+                                          <div class="c-header"><strong>${sanitizeText(c.authorName || c.email)}</strong> <span class="c-date">${c.createdAt ? new Date(c.createdAt.toMillis()).toLocaleDateString() : 'Just now'}</span></div>
+                                          <p>${sanitizeText(c.text)}</p>
+                                      </div>
+                                  </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } catch(e) {
+                console.error(e);
+                showToast("Failed to load game details", "error");
+                navigateToStore();
+            }
+        };
+
+        window.toggleVote = async (gameId, voteType) => {
+            if (!window.currentUser) return showToast("Log in to vote", "error");
+            
+            const voteId = `${window.currentUser.uid}_${gameId}`;
+            const voteRef = doc(db, "votes", voteId);
+            const gameRef = doc(db, "games", gameId);
+            
+            try {
+                const voteSnap = await getDoc(voteRef);
+                let currentVote = voteSnap.exists() ? voteSnap.data().type : null;
+
+                if (currentVote === voteType) {
+                    // Toggle off the same vote
+                    await deleteDoc(voteRef);
+                    await updateDoc(gameRef, { [voteType + 's']: increment(-1) });
+                } else {
+                    // Set new vote
+                    await setDoc(voteRef, { gameId, userId: window.currentUser.uid, type: voteType, createdAt: serverTimestamp() });
+                    
+                    const updates = { [voteType + 's']: increment(1) };
+                    if (currentVote) {
+                        updates[currentVote + 's'] = increment(-1); // remove old vote
+                    }
+                    await updateDoc(gameRef, updates);
+                }
+                
+                navigateToGameDetail(gameId); // Refresh to update UI
+            } catch(e) { 
+                showToast("Error updating vote", "error"); 
+            }
+        };
+
+        window.postComment = async (gameId) => {
+            const text = document.getElementById('new-comment').value.trim();
+            if(!text) return;
+            try {
+                await addDoc(collection(db,"comments"), { 
+                    gameId: gameId,
+                    userId: window.currentUser.uid,
+                    text: text,
+                    authorName: window.currentUser.displayName || "Player",
+                    authorEmoji: window.currentUser.photoURL || '👾',
+                    email: window.currentUser.email,
+                    createdAt: serverTimestamp() 
+                });
+                showToast("Comment posted!", "success");
+                navigateToGameDetail(gameId); // reload to show comment
+            } catch(e) { showToast("Error posting comment", "error"); }
+        };
+
+        window.launchGame = async (gameId) => {
+            showToast("Initializing environment...", "info");
+            const gameDoc = await getDoc(doc(db,"games",gameId));
+            if(!gameDoc.exists()) return;
+            const game = gameDoc.data();
+            
+            // Update last played locally
+            if(window.userLibrary.has(gameId)) {
+                const ld = window.userLibrary.get(gameId);
+                ld.lastPlayed = Date.now();
+                window.userLibrary.set(gameId, ld);
+                localStorage.setItem(`arcadeForgeLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
+            }
+
+            const playUrl = game.gameURL || game.gameFileUrl;
+
+            if(playUrl) {
+                const modal = document.createElement('div');
+                modal.className = 'fullscreen-modal fade-in';
+                modal.innerHTML = `
+                    <div class="game-toolbar glass">
+                        <span class="game-title-bar"><i class="fas fa-gamepad"></i> ${sanitizeText(game.title)}</span>
+                        <button class="btn-icon text-muted" onclick="this.closest('.fullscreen-modal').remove(); document.body.style.overflow='auto';"><i class="fas fa-times fa-lg"></i></button>
+                    </div>
+                    <iframe class="game-iframe" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" src="${playUrl}"></iframe>
+                `;
+                document.body.appendChild(modal);
+                document.body.style.overflow = 'hidden';
+            } else { 
+                showToast("Game executable/URL not found.", "error"); 
+            }
+        };
+
+        window.navigateToUpload = () => {
+            window.currentView = "upload";
+            const viewDiv = document.getElementById('dynamic-view');
+            viewDiv.innerHTML = `
+                <div class="fade-in max-w-800 m-auto">
+                    <div class="section-header"><h2><i class="fas fa-cloud-upload-alt text-accent"></i> Publish Game</h2></div>
+                    <div class="glass p-4 rad-lg upload-form">
+                        <div class="legal-warning mb-4">
+                            <i class="fas fa-gavel"></i> <strong>Publisher Agreement:</strong> Games are hosted via external URLs (like GitHub Pages). You confirm you own all rights or have explicit permission to distribute this content.
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Game Title *</label>
+                            <input type="text" id="up-title" class="input-modern" placeholder="Epic Quest">
+                        </div>
+                        <div class="form-group">
+                            <label>Studio / Creator Name *</label>
+                            <input type="text" id="up-creator" class="input-modern" value="${sanitizeText(window.currentUser.displayName || '')}">
+                        </div>
+                        <div class="form-group">
+                            <label>Description *</label>
+                            <textarea id="up-desc" class="input-modern" rows="4" placeholder="Tell players about your game..."></textarea>
+                        </div>
+                        <div class="row-2">
+                            <div class="form-group">
+                                <label>Category</label>
+                                <select id="up-category" class="input-modern">
+                                    <option>Action</option><option>Puzzle</option><option>RPG</option><option>Platformer</option><option>Simulation</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Tags (comma separated)</label>
+                                <input type="text" id="up-tags" class="input-modern" placeholder="pixel-art, retro, hard">
+                            </div>
+                        </div>
+                        
+                        <hr class="subtle-hr">
+                        
+                        <div class="form-group">
+                            <label>Game Icon URL (1:1 Ratio) *</label>
+                            <input type="url" id="up-icon" class="input-modern" placeholder="https://example.com/icon.png">
+                        </div>
+                        <div class="form-group">
+                            <label>Screenshots URLs (comma separated)</label>
+                            <input type="text" id="up-screenshots" class="input-modern" placeholder="https://example.com/img1.png, https://example.com/img2.png">
+                        </div>
+                        <div class="form-group">
+                            <label>GitHub Game URL *</label>
+                            <input type="url" id="up-file" class="input-modern" placeholder="https://gogi-dev.github.io/game-store/games/game1/index.html">
+                            <small class="text-muted mt-1 d-block">Link directly to the playable HTML file hosted on GitHub Pages or similar external host.</small>
+                        </div>
+                        
+                        <button id="submit-upload-btn" class="btn-primary large w-100 mt-4"><i class="fas fa-rocket"></i> Publish to ArcadeForge</button>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('submit-upload-btn').addEventListener('click', async function() {
+                const title = document.getElementById('up-title').value.trim();
+                const creator = document.getElementById('up-creator').value.trim();
+                const desc = document.getElementById('up-desc').value.trim();
+                const cat = document.getElementById('up-category').value;
+                const tags = document.getElementById('up-tags').value.split(',').map(s=>s.trim()).filter(Boolean);
+                const iconUrl = document.getElementById('up-icon').value.trim();
+                const ssRaw = document.getElementById('up-screenshots').value.trim();
+                const ssUrls = ssRaw ? ssRaw.split(',').map(s=>s.trim()).filter(Boolean) : [];
+                const gameUrl = document.getElementById('up-file').value.trim();
+
+                if(!title || !creator || !desc || !iconUrl || !gameUrl) {
+                    return showToast("Please fill all required fields including URLs.", "error");
+                }
+
+                this.disabled = true;
+                this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing...';
+                
+                try {
+                    await addDoc(collection(db, "games"), {
+                        title, 
+                        creator, 
+                        description: desc, 
+                        category: cat, 
+                        tags,
+                        iconURL: iconUrl, 
+                        screenshots: ssUrls, 
+                        gameURL: gameUrl,
+                        likes: 0, 
+                        dislikes: 0,
+                        downloads: 0, 
+                        ownerId: window.currentUser.uid,
+                        createdAt: serverTimestamp()
+                    });
+
+                    showToast("Game Published Successfully!", "success");
+                    navigateToMyUploads();
+                } catch(e) {
+                    console.error(e);
+                    showToast("Publish failed", "error");
+                    this.disabled = false;
+                    this.innerHTML = '<i class="fas fa-rocket"></i> Publish to ArcadeForge';
+                }
+            });
+        };
+
+        window.navigateToSettings = () => {
+            window.currentView = "settings";
+            const viewDiv = document.getElementById('dynamic-view');
+            viewDiv.innerHTML = `
+                <div class="fade-in max-w-800 m-auto">
+                    <div class="section-header"><h2><i class="fas fa-cog text-accent"></i> Preferences</h2></div>
+                    <div class="glass p-4 rad-lg mb-4">
+                        <h3>Profile</h3>
+                        <div class="settings-row mt-3">
+                            <label>Display Name</label>
+                            <input type="text" id="set-name" class="input-modern" value="${sanitizeText(window.currentUser.displayName || '')}">
+                        </div>
+                        <div class="settings-row mt-3">
+                            <label>Avatar</label>
+                            <div class="emoji-picker-mini" id="set-emoji">
+                                ${['👾','🦊','🤖','👻','🐉','🐱','🦄','😎'].map(e => `
+                                    <span class="emoji-option ${window.currentUser.photoURL === e ? 'active' : ''}" data-emoji="${e}">${e}</span>
+                                `).join('')}
+                            </div>
+                        </div>
+                        <button class="btn-primary mt-3" onclick="saveProfile()"><i class="fas fa-save"></i> Save Profile</button>
+                    </div>
+
+                    <div class="glass p-4 rad-lg mb-4">
+                        <h3>App Settings</h3>
+                        <div class="settings-row mt-3">
+                            <label>Theme</label>
+                            <select id="set-theme" class="input-modern" onchange="updateTheme(this.value)">
+                                <option value="dark" ${window.userPrefs.theme==='dark'?'selected':''}>Dark Space (Default)</option>
+                                <option value="darker" ${window.userPrefs.theme==='darker'?'selected':''}>Midnight Obsidian</option>
+                                <option value="purple" ${window.userPrefs.theme==='purple'?'selected':''}>Neon Purple</option>
+                            </select>
+                        </div>
+                        <div class="settings-row mt-3">
+                            <label>Local Data</label>
+                            <button class="btn-secondary" onclick="localStorage.removeItem('arcadeForgePrefs'); showToast('Cache cleared', 'success');"><i class="fas fa-broom"></i> Clear Prefs</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.querySelectorAll('#set-emoji .emoji-option').forEach(opt => {
+                opt.addEventListener('click', () => {
+                    document.querySelectorAll('#set-emoji .emoji-option').forEach(o => o.classList.remove('active'));
+                    opt.classList.add('active');
+                });
+            });
+        };
+
+        window.saveProfile = async () => {
+            const name = document.getElementById('set-name').value;
+            const emoji = document.querySelector('#set-emoji .emoji-option.active')?.dataset.emoji || '👾';
+            try {
+                await updateProfile(window.currentUser, { displayName: name, photoURL: emoji });
+                await updateDoc(doc(db, "users", window.currentUser.uid), { username: name, emoji });
+                showToast("Profile updated", "success");
+                renderApp(); // refresh nav
+            } catch(e) { showToast("Failed to update profile", "error"); }
+        };
+
+        window.updateTheme = (themeStr) => {
+            document.documentElement.setAttribute('data-theme', themeStr);
+            window.userPrefs.theme = themeStr;
+            localStorage.setItem('arcadeForgePrefs', JSON.stringify(window.userPrefs));
+        };
+
+        // ========== INIT ==========
+        onAuthStateChanged(auth, async (user) => {
+            window.currentUser = user;
+            if(user) { 
+                await fetchLibrary(); 
+                renderApp(); 
+            } else {
+                renderAuthScreen();
+            }
+        });
+
+    </script>
+    <style>
+        /* === THEMES & VARIABLES === */
+        :root {
+            --bg-base: #0a0f1e;
+            --bg-glass: rgba(15, 25, 45, 0.65);
+            --bg-glass-hover: rgba(25, 35, 60, 0.8);
+            --border-glass: rgba(72, 187, 255, 0.15);
+            --accent: #3c6eff;
+            --accent-hover: #507fff;
+            --text-main: #eef5ff;
+            --text-muted: #8db5ff;
+            --success: #10b981;
+            --danger: #ef4444;
+            --font: 'Inter', sans-serif;
+            --nav-width: 260px;
+        }
+
+        [data-theme="darker"] {
+            --bg-base: #030508;
+            --bg-glass: rgba(10, 12, 16, 0.8);
+            --bg-glass-hover: rgba(18, 22, 28, 0.9);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --accent: #e11d48;
+            --accent-hover: #fb7185;
+            --text-muted: #9ca3af;
+        }
+
+        [data-theme="purple"] {
+            --bg-base: #0f0a1e;
+            --bg-glass: rgba(25, 15, 45, 0.65);
+            --bg-glass-hover: rgba(35, 25, 60, 0.8);
+            --border-glass: rgba(187, 72, 255, 0.15);
+            --accent: #8b5cf6;
+            --accent-hover: #a78bfa;
+            --text-muted: #c4b5fd;
+        }
+
+        /* === RESET & BASE === */
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: var(--font); }
+        body { background: var(--bg-base); color: var(--text-main); min-height: 100vh; overflow-x: hidden; transition: background 0.3s; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+        /* === UTILS === */
+        .glass { background: var(--bg-glass); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--border-glass); border-radius: 20px; }
+        .text-accent { color: var(--accent); }
+        .text-muted { color: var(--text-muted); }
+        .text-danger { color: var(--danger); }
+        .w-100 { width: 100%; }
+        .mt-2 { margin-top: 0.5rem; } .mt-3 { margin-top: 1rem; } .mt-4 { margin-top: 1.5rem; } .mt-5 { margin-top: 2rem; }
+        .mb-2 { margin-bottom: 0.5rem; } .mb-3 { margin-bottom: 1rem; } .mb-4 { margin-bottom: 1.5rem; }
+        .p-4 { padding: 1.5rem; }
+        .d-block { display: block; }
+        .max-w-800 { max-width: 800px; }
+        .rad-lg { border-radius: 24px; }
+        .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .hidden { display: none !important; }
+        
+        .fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* === BUTTONS & INPUTS === */
+        button { font-family: var(--font); cursor: pointer; border: none; transition: all 0.2s; outline: none; }
+        .btn-primary { background: var(--accent); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.2); }
+        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+        .btn-primary.large { padding: 0.8rem 1.8rem; font-size: 1.1rem; }
+        .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
+        
+        .btn-secondary { background: rgba(255,255,255,0.1); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; }
+        .btn-secondary:hover { background: rgba(255,255,255,0.15); }
+        .btn-secondary.active { background: var(--accent); }
+        
+        .btn-text { background: transparent; color: var(--text-muted); font-weight: 500; font-size: 0.95rem; }
+        .btn-text:hover { color: var(--text-main); }
+        
+        .btn-icon { background: rgba(255,255,255,0.05); color: white; width: 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; }
+        .btn-icon:hover { background: rgba(255,255,255,0.15); transform: translateY(-2px); }
+        .btn-icon.large { width: 48px; height: 48px; font-size: 1.2rem; }
+
+        .input-modern { background: rgba(0,0,0,0.3); border: 1px solid var(--border-glass); border-radius: 12px; padding: 0.8rem 1.2rem; color: white; width: 100%; transition: border-color 0.2s; font-size: 0.95rem; }
+        .input-modern:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(60,110,255,0.1); }
+        .input-modern.slim { padding: 0.5rem 1rem; width: auto; }
+
+        /* === BADGES === */
+        .badge { display: inline-block; padding: 0.3rem 0.6rem; border-radius: 8px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+        .badge-accent { background: rgba(60,110,255,0.15); color: var(--accent); border: 1px solid rgba(60,110,255,0.3); }
+        .badge-subtle { background: rgba(255,255,255,0.05); color: var(--text-muted); }
+        .card-badge { position: absolute; top: 12px; right: 12px; background: var(--accent); color: white; padding: 0.3rem 0.6rem; border-radius: 8px; font-size: 0.7rem; font-weight: 800; box-shadow: 0 4px 10px rgba(0,0,0,0.3); z-index: 2; }
+
+        /* === AUTH === */
+        .auth-bg { height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 50% 0%, rgba(60,110,255,0.15), transparent 60%); padding: 1rem; }
+        .auth-card { width: 100%; max-width: 420px; padding: 2.5rem; border-radius: 30px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+        .auth-logo { font-size: 2.2rem; font-weight: 800; background: linear-gradient(135deg, #fff, var(--accent)); -webkit-background-clip: text; color: transparent; margin-bottom: 0.2rem; }
+        .auth-subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 2rem; }
+        .auth-tabs { display: flex; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 0.3rem; margin-bottom: 1.5rem; }
+        .auth-tab { flex: 1; padding: 0.6rem; background: transparent; border-radius: 10px; color: var(--text-muted); font-weight: 600; }
+        .auth-tab.active { background: var(--bg-glass-hover); color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+        .auth-card input { margin-bottom: 1rem; }
+        .emoji-picker-mini { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin-top: 0.5rem; }
+        .emoji-option { font-size: 1.8rem; padding: 0.3rem; border-radius: 50%; cursor: pointer; transition: 0.2s; background: rgba(255,255,255,0.02); }
+        .emoji-option:hover { background: rgba(255,255,255,0.1); transform: scale(1.1); }
+        .emoji-option.active { background: rgba(60,110,255,0.2); transform: scale(1.15); box-shadow: 0 0 15px rgba(60,110,255,0.3); }
+
+        /* === LAYOUT === */
+        .app-layout { display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: var(--nav-width); display: flex; flex-direction: column; border-radius: 0; border-top: none; border-bottom: none; border-left: none; border-right: 1px solid var(--border-glass); padding: 1.5rem 1rem; flex-shrink: 0; }
+        .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+        .dynamic-view { flex: 1; overflow-y: auto; padding: 2rem; scroll-behavior: smooth; }
+
+        /* === SIDEBAR === */
+        .nav-brand { font-size: 1.6rem; font-weight: 800; padding: 0 1rem 2rem 1rem; color: white; display: flex; align-items: center; gap: 0.6rem; }
+        .nav-brand i { color: var(--accent); }
+        .nav-links { flex: 1; display: flex; flex-direction: column; gap: 0.3rem; }
+        .nav-btn { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 1rem; background: transparent; color: var(--text-muted); border-radius: 12px; font-weight: 600; font-size: 1rem; transition: 0.2s; text-align: left; }
+        .nav-btn i { width: 20px; text-align: center; font-size: 1.1rem; }
+        .nav-btn:hover { background: rgba(255,255,255,0.05); color: white; }
+        .nav-btn.active { background: rgba(60,110,255,0.15); color: var(--accent); }
+        .nav-bottom { border-top: 1px solid var(--border-glass); padding-top: 1rem; margin-top: 1rem; }
+        .nav-user { display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem 0.5rem; margin-top: 0.5rem; }
+        .user-avatar { width: 40px; height: 40px; background: rgba(255,255,255,0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; }
+        .user-info { display: flex; flex-direction: column; }
+        .u-name { font-weight: 600; font-size: 0.95rem; }
+        .logout-text { background: transparent; color: var(--text-muted); padding: 0; text-align: left; font-size: 0.8rem; margin-top: 2px; }
+        .logout-text:hover { color: var(--danger); }
+
+        /* === TOP BAR === */
+        .top-bar { height: 70px; display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; border-radius: 0; border-top: none; border-left: none; border-right: none; z-index: 10; }
+        .search-wrapper { display: flex; align-items: center; background: rgba(0,0,0,0.3); border-radius: 20px; padding: 0.5rem 1rem; width: 400px; border: 1px solid rgba(255,255,255,0.05); transition: 0.2s; }
+        .search-wrapper:focus-within { border-color: var(--accent); background: rgba(0,0,0,0.5); }
+        .search-wrapper i { color: var(--text-muted); margin-right: 0.8rem; }
+        .search-wrapper input { background: transparent; border: none; color: white; outline: none; width: 100%; font-size: 0.95rem; }
+
+        /* === HERO CAROUSEL === */
+        .hero-carousel { position: relative; height: 380px; border-radius: 30px; overflow: hidden; display: flex; align-items: center; padding: 3rem; margin-bottom: 2rem; }
+        .hero-image { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-size: cover; background-position: center; z-index: 1; opacity: 0.6; filter: blur(4px) brightness(0.7); transform: scale(1.05); }
+        .hero-carousel::after { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(90deg, var(--bg-base) 0%, rgba(10,15,30,0.6) 50%, transparent 100%); z-index: 2; }
+        .hero-content { position: relative; z-index: 3; max-width: 500px; }
+        .hero-title { font-size: 3rem; font-weight: 800; line-height: 1.1; margin: 1rem 0; text-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .hero-desc { font-size: 1.1rem; color: #d1d5db; margin-bottom: 2rem; line-height: 1.5; text-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+
+        /* === STORE GRID === */
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+        .section-header h2 { font-size: 1.5rem; font-weight: 700; }
+        .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.5rem; }
+        .game-card { overflow: hidden; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); cursor: pointer; display: flex; flex-direction: column; }
+        .game-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.5); border-color: rgba(60,110,255,0.4); }
+        .game-image-wrapper { position: relative; height: 160px; overflow: hidden; background: #0f172a; }
+        .game-image-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s; }
+        .game-card:hover .game-image-wrapper img { transform: scale(1.08); }
+        .game-info { padding: 1.2rem; flex: 1; display: flex; flex-direction: column; }
+        .game-info h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.2rem; }
+        .creator-name { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.8rem; }
+        .game-meta { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); font-weight: 600; margin-top: auto; margin-bottom: 0.8rem; }
+        .btn-install { background: rgba(255,255,255,0.05); color: white; padding: 0.6rem; border-radius: 10px; font-weight: 600; transition: 0.2s; }
+        .btn-install:hover { background: var(--accent); }
+        .btn-install.installed { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+        /* === LIBRARY LIST === */
+        .library-list { display: flex; flex-direction: column; gap: 1rem; }
+        .lib-item { display: flex; align-items: center; padding: 1rem; gap: 1.5rem; transition: 0.2s; }
+        .lib-item:hover { background: var(--bg-glass-hover); }
+        .lib-thumb { width: 120px; height: 75px; border-radius: 12px; object-fit: cover; background: #0f172a; }
+        .lib-details { flex: 1; }
+        .lib-details h3 { font-size: 1.2rem; margin-bottom: 0.3rem; }
+        .lib-details p { font-size: 0.85rem; color: var(--text-muted); }
+        .lib-actions { display: flex; gap: 0.8rem; }
+
+        /* === GAME DETAIL === */
+        .detail-hero { display: flex; gap: 2.5rem; padding: 2.5rem; border-radius: 30px; align-items: flex-start; flex-wrap: wrap; }
+        .detail-icon { width: 280px; height: 280px; border-radius: 24px; object-fit: cover; box-shadow: 0 20px 40px rgba(0,0,0,0.4); flex-shrink: 0; background: #0f172a; }
+        .detail-main-info { flex: 1; min-width: 300px; }
+        .detail-main-info h1 { font-size: 2.8rem; font-weight: 800; line-height: 1.2; margin-bottom: 0.5rem; }
+        .tags-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .detail-desc { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; white-space: pre-line; }
+        .screenshot-gallery { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; margin-top: 1rem; scroll-snap-type: x mandatory; }
+        .gallery-img { height: 200px; border-radius: 16px; object-fit: cover; scroll-snap-align: start; flex-shrink: 0; }
+        .comment-item { display: flex; gap: 1rem; padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 16px; margin-bottom: 0.8rem; }
+        .c-avatar { font-size: 1.8rem; width: 48px; height: 48px; background: rgba(255,255,255,0.05); border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .c-content { flex: 1; }
+        .c-header { display: flex; justify-content: space-between; margin-bottom: 0.3rem; }
+        .c-date { font-size: 0.8rem; color: var(--text-muted); }
+
+        /* === PUBLISHER DASHBOARD & UPLOAD === */
+        .stats-row { display: flex; gap: 1.5rem; }
+        .stat-card { flex: 1; padding: 1.5rem; border-radius: 20px; text-align: center; }
+        .stat-card h4 { color: var(--text-muted); font-weight: 500; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem; }
+        .stat-card h2 { font-size: 2.5rem; font-weight: 800; color: var(--accent); }
+        .upload-form .form-group { margin-bottom: 1.5rem; }
+        .upload-form label { display: block; font-weight: 600; margin-bottom: 0.5rem; color: #cbd5e1; font-size: 0.95rem; }
+        .upload-form .row-2 { display: flex; gap: 1.5rem; }
+        .upload-form .row-2 > div { flex: 1; }
+        .subtle-hr { border: none; border-top: 1px solid var(--border-glass); margin: 2rem 0; }
+        .legal-warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: #fcd34d; padding: 1rem 1.5rem; border-radius: 12px; font-size: 0.9rem; line-height: 1.5; }
+
+        /* === GAME PLAYER MODAL === */
+        .fullscreen-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; z-index: 9999; display: flex; flex-direction: column; }
+        .game-toolbar { height: 50px; display: flex; justify-content: space-between; align-items: center; padding: 0 1.5rem; border-radius: 0; border-bottom: 1px solid rgba(255,255,255,0.1); background: #0a0f1e; }
+        .game-title-bar { font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
+        .game-iframe { flex: 1; width: 100%; border: none; background: #000; }
+
+        /* === LOADERS & UTILS === */
+        .loader-container { padding: 1rem 0; }
+        .skeleton-banner { height: 380px; border-radius: 30px; background: linear-gradient(90deg, rgba(255,255,255,0.02) 25%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0.02) 75%); background-size: 200% 100%; animation: shimmer 2s infinite; }
+        .skeleton-card { height: 280px; border-radius: 20px; background: linear-gradient(90deg, rgba(255,255,255,0.02) 25%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0.02) 75%); background-size: 200% 100%; animation: shimmer 2s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        
+        .global-toast { position: fixed; bottom: 30px; right: 30px; background: var(--bg-glass); backdrop-filter: blur(12px); border: 1px solid var(--border-glass); padding: 1rem 1.5rem; border-radius: 16px; color: white; z-index: 10000; font-weight: 500; display: flex; align-items: center; gap: 0.8rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5); transform: translateY(100px) scale(0.9); opacity: 0; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); pointer-events: none; }
+        .global-toast.show { transform: translateY(0) scale(1); opacity: 1; }
+        .global-toast.success i { color: var(--success); font-size: 1.2rem; }
+        .global-toast.error i { color: var(--danger); font-size: 1.2rem; }
+        .global-toast.info i { color: var(--accent); font-size: 1.2rem; }
+
+        /* === RESPONSIVE === */
+        @media (max-width: 900px) {
+            .detail-hero { flex-direction: column; align-items: center; text-align: center; }
+            .detail-actions { justify-content: center; }
+            .tags-row { justify-content: center; }
+            .upload-form .row-2 { flex-direction: column; gap: 0; }
+        }
+        @media (max-width: 768px) {
+            .app-layout { flex-direction: column; }
+            .sidebar { width: 100%; height: auto; flex-direction: row; align-items: center; padding: 1rem; border-right: none; border-bottom: 1px solid var(--border-glass); overflow-x: auto; }
+            .nav-brand { padding: 0; margin-right: 2rem; }
+            .nav-brand span { display: none; }
+            .nav-links { flex-direction: row; gap: 0.5rem; }
+            .nav-btn { padding: 0.5rem; justify-content: center; white-space: nowrap; }
+            .nav-btn span { display: none; }
+            .nav-bottom { margin-top: 0; padding-top: 0; border-top: none; display: flex; align-items: center; margin-left: auto; border-left: 1px solid var(--border-glass); padding-left: 1rem; }
+            .user-info { display: none; }
+            .top-bar { padding: 0 1rem; }
+            .search-wrapper { width: 100%; max-width: 300px; }
+            .dynamic-view { padding: 1rem; }
+            .hero-carousel { padding: 2rem; height: auto; min-height: 300px; }
+            .hero-title { font-size: 2rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app-root"></div>
+    <div id="global-toast" class="global-toast"></div>
+</body>
+</html>
