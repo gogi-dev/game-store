@@ -49,10 +49,19 @@
         window.currentView = "store";
         window.allGames = [];
         window.userLibrary = new Map();
-        window.userPrefs = JSON.parse(localStorage.getItem('gameLoomPrefs')) || { theme: 'dark' };
+        window.userPrefs = JSON.parse(localStorage.getItem('gameLoomPrefs')) || { theme: 'dark', keyMap: {} };
         window.activeChatUnsubscribe = null;
         window.activeChatDocUnsubscribe = null;
         window.presenceInterval = null;
+
+        // Controller State
+        window.isGameRunning = false;
+        window.isOverlayOpen = false;
+        window.lastBtnState = {};
+
+        // Default Key Mappings (Xbox/PS standard layout fallback)
+        const defaultMap = { 0: 'Enter', 1: 'Escape', 12: 'ArrowUp', 13: 'ArrowDown', 14: 'ArrowLeft', 15: 'ArrowRight' };
+        window.userPrefs.keyMap = Object.keys(window.userPrefs.keyMap || {}).length > 0 ? window.userPrefs.keyMap : defaultMap;
         
         // All Emojis (20+)
         const avatarEmojis = ['👾','🦊','🤖','👻','🐉','🐱','🦄','😎','🚀','🔥','💎','👑','🐼','🐸','🐯','🦁','🐙','🦖','👽','🤡','🤠'];
@@ -75,12 +84,10 @@
             toast.innerHTML = `<i class="fas ${type === 'error' ? 'fa-exclamation-circle' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle'}"></i> ${message}`;
             container.appendChild(toast);
             
-            // Trigger animation
             setTimeout(() => toast.classList.add('show'), 10);
-            
             setTimeout(() => {
                 toast.classList.remove('show');
-                setTimeout(() => toast.remove(), 400); // match CSS transition
+                setTimeout(() => toast.remove(), 400); 
             }, 4000);
         };
         
@@ -90,6 +97,21 @@
             div.textContent = str;
             return div.innerHTML;
         }
+
+        // ========== FULLSCREEN IMAGE VIEWER ==========
+        window.openImageViewer = (url) => {
+            const viewer = document.createElement('div');
+            viewer.className = 'fullscreen-modal fade-in image-viewer-modal';
+            viewer.style.zIndex = '100001';
+            viewer.innerHTML = `
+                <div style="position:absolute; top:20px; right:20px; z-index:2;">
+                    <button class="btn-icon large focusable" style="background: rgba(0,0,0,0.6);" onclick="this.closest('.fullscreen-modal').remove(); window.updateFocusables();"><i class="fas fa-times"></i></button>
+                </div>
+                <img src="${url}" style="max-width:90vw; max-height:90vh; object-fit:contain; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.8);">
+            `;
+            document.body.appendChild(viewer);
+            window.updateFocusables();
+        };
 
         // ========== PRIVACY POLICY GATE ==========
         function checkPrivacyPolicy() {
@@ -115,14 +137,13 @@
                 document.getElementById('agree-btn').addEventListener('click', () => {
                     localStorage.setItem('gameloom_agreed', 'true');
                     modal.remove();
-                    initFocusSystem(); // Re-init focus
+                    initFocusSystem(); 
                 });
             }
         }
 
         // ========== ANALYTICS & PRESENCE ==========
         async function initAnalytics() {
-            // Track Total Visit (Once per session)
             if (!sessionStorage.getItem('gameloom_visited')) {
                 sessionStorage.setItem('gameloom_visited', 'true');
                 try {
@@ -130,31 +151,25 @@
                 } catch(e) { console.error("Analytics error", e); }
             }
 
-            // Listen to Total Visits
             onSnapshot(doc(db, "analytics", "main"), (docSnap) => {
                 const visitsEl = document.getElementById('stat-visits');
                 if (visitsEl && docSnap.exists()) {
                     visitsEl.innerHTML = `👁️ ${docSnap.data().totalVisits || 0} Visits`;
                 }
             });
-            
-            updateOnlineStatus(); // Start loop
+            updateOnlineStatus(); 
         }
 
         async function updateOnlineStatus() {
-            // Self-Presence Loop
             if (window.presenceInterval) clearInterval(window.presenceInterval);
             const updatePresence = async () => {
                 if (window.currentUser) {
-                    try {
-                        await updateDoc(doc(db, "users", window.currentUser.uid), { lastActive: Date.now() });
-                    } catch(e){}
+                    try { await updateDoc(doc(db, "users", window.currentUser.uid), { lastActive: Date.now() }); } catch(e){}
                 }
             };
             updatePresence();
-            window.presenceInterval = setInterval(updatePresence, 30000); // 30s
+            window.presenceInterval = setInterval(updatePresence, 30000); 
 
-            // Poll online users (last 60s)
             setInterval(async () => {
                 try {
                     const snap = await getDocs(collection(db, "users"));
@@ -166,19 +181,38 @@
                     const onlineEl = document.getElementById('stat-online');
                     if(onlineEl) onlineEl.innerHTML = `🟢 ${onlineCount} Online`;
                 } catch(e){}
-            }, 15000); // Check every 15s
+            }, 15000); 
         }
 
-        // ========== CONTROLLER & KEYBOARD NAVIGATION ==========
+        // ========== CONTROLLER & KEYBOARD NAVIGATION (MAPPING) ==========
+        
+        // Simulates keyboard events for mapped controllers
+        const simulateKey = (key, type) => {
+            const event = new KeyboardEvent(type, { key: key, code: key, bubbles: true, cancelable: true });
+            document.dispatchEvent(event);
+            const iframe = document.querySelector('.game-iframe');
+            if(iframe && iframe.contentWindow) {
+                try { iframe.contentWindow.dispatchEvent(new KeyboardEvent(type, { key: key, code: key, bubbles: true, cancelable: true })); } catch(e){}
+            }
+        };
+
         function initFocusSystem() {
             window.updateFocusables = () => {
-                window.focusables = Array.from(document.querySelectorAll('button, input, select, textarea, .game-card, .focusable, .lib-item'))
-                                       .filter(el => el.offsetParent !== null); // Only visible
+                window.focusables = Array.from(document.querySelectorAll('button, input, select, textarea, .game-card, .focusable, .lib-item, .gallery-img'))
+                                       .filter(el => el.offsetParent !== null && window.getComputedStyle(el).display !== 'none');
             };
             
             document.addEventListener('keydown', (e) => {
-                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                // Overlay Hotkey
+                if (e.key === 'Escape' && window.isGameRunning) {
                     e.preventDefault();
+                    window.toggleInGameOverlay();
+                    return;
+                }
+
+                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && (!document.activeElement || (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA'))) {
+                    if(!window.isGameRunning || window.isOverlayOpen) e.preventDefault();
+                    
                     window.updateFocusables();
                     let idx = window.focusables.indexOf(document.activeElement);
                     if (e.key === 'ArrowDown' || e.key === 'ArrowRight') idx = (idx + 1) % window.focusables.length;
@@ -187,33 +221,66 @@
                 }
             });
 
-            // Gamepad loop
-            let lastBtnState = false;
+            // Gamepad loop (Checks connection & handles mappings & testing)
             let lastDPadState = 0; 
             const padLoop = () => {
-                const pads = navigator.getGamepads();
-                const pad = pads[0] || pads[1] || pads[2] || pads[3];
-                if (pad && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-                    if (pad.buttons[0].pressed && !lastBtnState) {
-                        if (document.activeElement && typeof document.activeElement.click === 'function') {
-                            document.activeElement.click();
-                        }
+                const pad = navigator.getGamepads()[0] || navigator.getGamepads()[1] || navigator.getGamepads()[2] || navigator.getGamepads()[3];
+                
+                // Settings UI status updater & input tester
+                const statusEl = document.getElementById('controller-status');
+                const testEl = document.getElementById('controller-test');
+                if (statusEl) {
+                    if (pad) {
+                        statusEl.className = 'mb-3 badge badge-accent';
+                        statusEl.innerHTML = `<i class="fas fa-gamepad"></i> Connected: ${pad.id.substring(0, 20)}...`;
+                    } else {
+                        statusEl.className = 'mb-3 badge badge-subtle';
+                        statusEl.innerHTML = `<i class="fas fa-gamepad"></i> No Controller Detected`;
+                        if(testEl) testEl.innerText = 'Press any button...';
                     }
-                    lastBtnState = pad.buttons[0].pressed;
+                }
 
-                    let dPadState = 0;
-                    if (pad.axes[1] < -0.5 || pad.axes[0] < -0.5 || (pad.buttons[12] && pad.buttons[12].pressed) || (pad.buttons[14] && pad.buttons[14].pressed)) dPadState = 1; 
-                    if (pad.axes[1] > 0.5 || pad.axes[0] > 0.5 || (pad.buttons[13] && pad.buttons[13].pressed) || (pad.buttons[15] && pad.buttons[15].pressed)) dPadState = 2; 
+                if (pad && (!document.activeElement || (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA'))) {
                     
-                    if (dPadState !== 0 && lastDPadState === 0) {
-                        window.updateFocusables();
-                        let idx = window.focusables.indexOf(document.activeElement);
-                        if (idx === -1) idx = 0;
-                        else if (dPadState === 2) idx = (idx + 1) % window.focusables.length;
-                        else if (dPadState === 1) idx = (idx - 1 + window.focusables.length) % window.focusables.length;
-                        if(window.focusables[idx]) window.focusables[idx].focus();
+                    for(let i=0; i<pad.buttons.length; i++) {
+                        let pressed = pad.buttons[i].pressed;
+                        if (pressed && !window.lastBtnState[i]) {
+                            
+                            if(testEl) testEl.innerText = `Button ${i} Pressed`;
+
+                            // On Key Down
+                            if (window.isGameRunning && !window.isOverlayOpen) {
+                                if (i === 9) { window.toggleInGameOverlay(); } // Start/Menu Button
+                                else if (window.userPrefs.keyMap[i]) simulateKey(window.userPrefs.keyMap[i], 'keydown');
+                            } else {
+                                // UI Mode (Nav/Select)
+                                if (i === 0 && document.activeElement && typeof document.activeElement.click === 'function') document.activeElement.click();
+                            }
+                        } else if (!pressed && window.lastBtnState[i]) {
+                            // On Key Up
+                            if (window.isGameRunning && !window.isOverlayOpen && window.userPrefs.keyMap[i]) {
+                                simulateKey(window.userPrefs.keyMap[i], 'keyup');
+                            }
+                        }
+                        window.lastBtnState[i] = pressed;
                     }
-                    lastDPadState = dPadState;
+
+                    // Axes / D-Pad for UI Navigation
+                    if (!window.isGameRunning || window.isOverlayOpen) {
+                        let dPadState = 0;
+                        if (pad.axes[1] < -0.5 || pad.axes[0] < -0.5 || (pad.buttons[12] && pad.buttons[12].pressed) || (pad.buttons[14] && pad.buttons[14].pressed)) dPadState = 1; 
+                        if (pad.axes[1] > 0.5 || pad.axes[0] > 0.5 || (pad.buttons[13] && pad.buttons[13].pressed) || (pad.buttons[15] && pad.buttons[15].pressed)) dPadState = 2; 
+                        
+                        if (dPadState !== 0 && lastDPadState === 0) {
+                            window.updateFocusables();
+                            let idx = window.focusables.indexOf(document.activeElement);
+                            if (idx === -1) idx = 0;
+                            else if (dPadState === 2) idx = (idx + 1) % window.focusables.length;
+                            else if (dPadState === 1) idx = (idx - 1 + window.focusables.length) % window.focusables.length;
+                            if(window.focusables[idx]) window.focusables[idx].focus();
+                        }
+                        lastDPadState = dPadState;
+                    }
                 }
                 requestAnimationFrame(padLoop);
             };
@@ -836,7 +903,6 @@
 
         // ========== CORE GAME VIEWS ==========
 
-        // Embed Game in Container Function
         window.embedGame = (url, containerId) => {
             const container = document.getElementById(containerId);
             if(!container) return;
@@ -860,7 +926,6 @@
                 }
                 localStorage.setItem(`gameLoomLibrary_${window.currentUser.uid}`, JSON.stringify(Array.from(window.userLibrary.values())));
                 
-                // NO RELOAD logic for active views
                 if(window.currentView === 'store') {
                     const btn = document.getElementById(`store-install-${gameId}`);
                     if(btn) {
@@ -895,7 +960,6 @@
                 const commentsSnap = await getDocs(query(collection(db,"comments"), where("gameId", "==", gameId)));
                 let comments = commentsSnap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
                 
-                // Load user comment votes for instant UI matching
                 const userCommentVotes = {};
                 if (window.currentUser) {
                     await Promise.all(comments.map(async c => {
@@ -909,7 +973,6 @@
                 const userVote = voteSnap.exists() ? voteSnap.data().type : null;
                 const isInstalled = window.userLibrary.has(gameId);
 
-                // Suggested Games (Exclude current, random slice)
                 const suggestedGames = window.allGames.filter(g => g.id !== gameId).sort(() => 0.5 - Math.random()).slice(0, 4);
                 const suggestedHtml = suggestedGames.length > 0 ? suggestedGames.map(sg => `
                     <div class="game-card glass focusable" style="min-width:200px;" tabindex="0" onclick="navigateToGameDetail('${sg.id}')" onkeydown="if(event.key==='Enter')this.click()">
@@ -925,7 +988,6 @@
                     </div>
                 `).join('') : '<p class="text-muted">No suggestions available.</p>';
 
-                // Render Layout: Preview -> Info -> Comments -> Suggested
                 viewDiv.innerHTML = `
                     <div class="fade-in">
                         <button class="btn-text mb-3 focusable" onclick="navigateToStore()"><i class="fas fa-arrow-left"></i> Back to Store</button>
@@ -933,28 +995,23 @@
                         <div class="game-preview-container glass" id="game-player-area-${game.id}">
                             <img src="${game.iconURL || game.iconUrl}" alt="Preview" style="position:absolute; width:100%; height:100%; object-fit:cover; opacity:0.4; filter:blur(10px);">
                             <img src="${(game.screenshots && game.screenshots.length > 0) ? game.screenshots[0] : (game.iconURL || game.iconUrl)}" style="max-height:400px; max-width:90%; z-index:1; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.5); object-fit:contain;">
-                            <div class="play-overlay" onclick="embedGame('${game.gameURL || game.gameFileUrl}', 'game-player-area-${game.id}')">
+                            <div class="play-overlay" onclick="launchGame('${game.id}', 'game-player-area-${game.id}')">
                                 <button class="btn-primary focusable" style="font-size:1.8rem; padding:1.2rem 2.5rem; border-radius:24px; box-shadow: 0 0 30px rgba(60,110,255,0.6); pointer-events:none;"><i class="fas fa-play"></i> Play Now</button>
                             </div>
                         </div>
 
                         <div class="detail-main-info glass p-4 rad-lg mb-4" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:2rem;">
-                            <div style="flex:1; min-width:300px;">
-                                <h1>${sanitizeText(game.title)}</h1>
-                                <p class="creator-name mb-2">Developed by <strong>${sanitizeText(game.creator)}</strong></p>
-                                <div class="tags-row mb-3">
-                                    <span class="badge badge-accent">${sanitizeText(game.category || 'Game')}</span>
-                                    ${(game.tags||[]).slice(0,3).map(t => `<span class="badge badge-subtle">${sanitizeText(t)}</span>`).join('')}
-                                </div>
-                                <p class="detail-desc" style="max-width:800px;">${sanitizeText(game.description)}</p>
-                                
-                                ${game.screenshots && game.screenshots.length > 0 ? `
-                                <div class="mt-4">
-                                    <h4 class="text-muted mb-2"><i class="fas fa-image"></i> Gallery</h4>
-                                    <div class="screenshot-gallery" style="margin-top:0;">
-                                        ${game.screenshots.map(url => `<img src="${url}" class="gallery-img glass focusable" tabindex="0">`).join('')}
+                            <div style="flex:1; min-width:300px; display:flex; gap:1.5rem;">
+                                <img src="${game.iconURL || game.iconUrl}" class="detail-icon" style="width:120px; height:120px; border-radius:20px; object-fit:cover; aspect-ratio:1/1;" onerror="this.src='https://placehold.co/400x400/1e293b/ffffff?text=🎮'">
+                                <div style="flex:1;">
+                                    <h1>${sanitizeText(game.title)}</h1>
+                                    <p class="creator-name mb-2">Developed by <strong>${sanitizeText(game.creator)}</strong></p>
+                                    <div class="tags-row mb-3">
+                                        <span class="badge badge-accent">${sanitizeText(game.category || 'Game')}</span>
+                                        ${(game.tags||[]).slice(0,3).map(t => `<span class="badge badge-subtle">${sanitizeText(t)}</span>`).join('')}
                                     </div>
-                                </div>` : ''}
+                                    <p class="detail-desc" style="max-width:800px;">${sanitizeText(game.description)}</p>
+                                </div>
                             </div>
 
                             <div class="detail-actions" style="display:flex; flex-direction:column; gap: 1rem; min-width:250px;">
@@ -970,6 +1027,14 @@
                                 </div>
                             </div>
                         </div>
+
+                        ${game.screenshots && game.screenshots.length > 0 ? `
+                        <div class="glass p-4 rad-lg mb-4">
+                            <h4 class="text-muted mb-2"><i class="fas fa-image"></i> Gallery</h4>
+                            <div class="screenshot-gallery" style="margin-top:0;">
+                                ${game.screenshots.map(url => `<img src="${url}" class="gallery-img glass focusable" tabindex="0" onclick="openImageViewer('${url}')" onkeydown="if(event.key==='Enter')this.click()">`).join('')}
+                            </div>
+                        </div>` : ''}
 
                         <div class="glass p-4 rad-lg mb-4">
                             <h3><i class="fas fa-comments"></i> Community Comments</h3>
@@ -1014,11 +1079,9 @@
             } catch(e) { navigateToStore(); }
         };
 
-        // NO RELOAD Toggle Vote
         window.toggleVote = async (gameId, voteType) => {
             if (!window.currentUser) return showToast("Log in to vote", "error");
             
-            // UI Feedback
             const btn = document.getElementById(`vote-${voteType}-${gameId}`);
             if(btn) { btn.classList.remove('pop-anim'); void btn.offsetWidth; btn.classList.add('pop-anim'); }
 
@@ -1061,14 +1124,12 @@
                 if(likeCountEl) likeCountEl.innerText = Math.max(0, likes);
                 if(dislikeCountEl) dislikeCountEl.innerText = Math.max(0, dislikes);
 
-                // Update cache
                 const gameObj = window.allGames.find(g => g.id === gameId);
                 if(gameObj) { gameObj.likes = Math.max(0, likes); gameObj.dislikes = Math.max(0, dislikes); }
 
             } catch(e) { showToast("Error updating vote", "error"); }
         };
 
-        // NO RELOAD Comment Vote
         window.toggleCommentVote = async (commentId, voteType) => {
             if (!window.currentUser) return showToast("Log in to vote", "error");
             
@@ -1117,7 +1178,6 @@
             } catch(e) { showToast("Error updating comment vote", "error"); }
         };
 
-        // NO RELOAD Post Comment
         window.postComment = async (gameId) => {
             const input = document.getElementById('new-comment');
             const text = input.value.trim();
@@ -1166,7 +1226,15 @@
             }
         };
 
-        window.launchGame = async (gameId) => {
+        window.toggleInGameOverlay = () => {
+            const overlay = document.getElementById('in-game-overlay');
+            if(!overlay) return;
+            window.isOverlayOpen = !window.isOverlayOpen;
+            overlay.style.display = window.isOverlayOpen ? 'flex' : 'none';
+            if(window.isOverlayOpen) window.updateFocusables();
+        };
+
+        window.launchGame = async (gameId, containerId = null) => {
             const gameDoc = await getDoc(doc(db,"games",gameId));
             if(!gameDoc.exists()) return;
             const game = gameDoc.data();
@@ -1179,19 +1247,46 @@
             }
 
             const playUrl = game.gameURL || game.gameFileUrl;
-            if(playUrl) {
-                const modal = document.createElement('div');
-                modal.className = 'fullscreen-modal fade-in';
-                modal.innerHTML = `
-                    <div class="game-toolbar glass">
-                        <span class="game-title-bar"><i class="fas fa-gamepad"></i> ${sanitizeText(game.title)}</span>
-                        <button class="btn-icon text-muted focusable" onclick="this.closest('.fullscreen-modal').remove(); document.body.style.overflow='auto'; window.updateFocusables();" style="z-index:99999;"><i class="fas fa-times fa-lg"></i></button>
+            if(!playUrl) return showToast("Game URL not found.", "error"); 
+
+            window.isGameRunning = true;
+
+            const modal = document.createElement('div');
+            modal.className = 'fullscreen-modal fade-in';
+            modal.id = 'active-game-modal';
+            modal.innerHTML = `
+                <div class="game-toolbar glass">
+                    <span class="game-title-bar"><i class="fas fa-gamepad"></i> ${sanitizeText(game.title)} <small class="text-muted" style="margin-left:1rem;">(Press ESC or Start for Menu)</small></span>
+                    <button class="btn-icon text-muted focusable" onclick="this.closest('.fullscreen-modal').remove(); window.isGameRunning=false; window.isOverlayOpen=false; document.body.style.overflow='auto'; window.updateFocusables();" style="z-index:99999;"><i class="fas fa-times fa-lg"></i></button>
+                </div>
+                <iframe class="game-iframe" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" src="${playUrl}"></iframe>
+                
+                <div id="in-game-overlay" style="display:none; position:absolute; inset:0; background:rgba(0,0,0,0.8); z-index:99998; flex-direction:column; align-items:center; justify-content:center; backdrop-filter:blur(8px);">
+                    <div class="glass p-4 rad-lg" style="width:400px; max-width:90%; text-align:center;">
+                        <h2 class="mb-4"><i class="fas fa-bars text-accent"></i> Game Menu</h2>
+                        
+                        <div class="mb-4">
+                            <label class="d-block text-muted mb-2 text-left">Volume (Simulated)</label>
+                            <input type="range" class="focusable w-100" min="0" max="100" value="100">
+                        </div>
+
+                        <div class="mb-4 text-left p-3 rad-lg" style="background:rgba(255,255,255,0.05);">
+                            <h4 class="mb-2"><i class="fas fa-keyboard"></i> Active Mappings</h4>
+                            <p style="font-size:0.8rem; margin:0; line-height:1.5;" class="text-muted">
+                                A: ${window.userPrefs.keyMap[0]||'None'} | B: ${window.userPrefs.keyMap[1]||'None'} <br>
+                                D-Pad: ${window.userPrefs.keyMap[12]||'Up'}/${window.userPrefs.keyMap[13]||'Dn'}/${window.userPrefs.keyMap[14]||'Lt'}/${window.userPrefs.keyMap[15]||'Rt'}
+                            </p>
+                        </div>
+
+                        <button class="btn-secondary w-100 mb-3 focusable" onclick="showToast('Screenshot saved to library!', 'success'); window.toggleInGameOverlay();"><i class="fas fa-camera"></i> Take Screenshot</button>
+                        <button class="btn-primary w-100 mb-3 focusable" onclick="window.toggleInGameOverlay()"><i class="fas fa-play"></i> Resume Game</button>
+                        <button class="btn-secondary w-100 focusable" style="background:rgba(239, 68, 68, 0.2); color:#ef4444;" onclick="document.getElementById('active-game-modal').remove(); window.isGameRunning=false; window.isOverlayOpen=false; document.body.style.overflow='auto'; window.updateFocusables();"><i class="fas fa-sign-out-alt"></i> Exit Game</button>
                     </div>
-                    <iframe class="game-iframe" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" src="${playUrl}"></iframe>
-                `;
-                document.body.appendChild(modal);
-                document.body.style.overflow = 'hidden';
-            } else showToast("Game URL not found.", "error"); 
+                </div>
+            `;
+            document.body.appendChild(modal);
+            document.body.style.overflow = 'hidden';
+            window.updateFocusables();
         };
 
         window.navigateToUpload = () => {
@@ -1251,7 +1346,8 @@
             const viewDiv = document.getElementById('dynamic-view');
             viewDiv.innerHTML = `
                 <div class="fade-in max-w-800 m-auto">
-                    <div class="section-header"><h2><i class="fas fa-cog text-accent"></i> Preferences</h2></div>
+                    <div class="section-header"><h2><i class="fas fa-cog text-accent"></i> Settings & Preferences</h2></div>
+                    
                     <div class="glass p-4 rad-lg mb-4">
                         <h3>Profile</h3>
                         <div class="settings-row mt-3"><label>Display Name</label><input type="text" id="set-name" class="input-modern focusable" value="${sanitizeText(window.currentUser.displayName || '')}"></div>
@@ -1261,6 +1357,25 @@
                             </div>
                         </div>
                         <button class="btn-primary mt-3 focusable" onclick="saveProfile()"><i class="fas fa-save"></i> Save Profile</button>
+                    </div>
+
+                    <div class="glass p-4 rad-lg mb-4">
+                        <h3><i class="fas fa-gamepad text-accent"></i> Controller Mapping</h3>
+                        <p class="text-muted mb-3" style="font-size:0.9rem;">Map gamepad buttons to keyboard keys. Focus an input and press a controller button to test.</p>
+                        
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom:1rem;">
+                            <div id="controller-status" class="badge badge-subtle"><i class="fas fa-gamepad"></i> Detecting controller...</div>
+                            <div id="controller-test" class="text-muted" style="font-size:0.85rem; font-style:italic;">Press any button...</div>
+                        </div>
+                        
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
+                            <div class="settings-row"><label>A / Cross (Btn 0)</label><input type="text" class="input-modern slim focusable map-input" data-btn="0" value="${window.userPrefs.keyMap[0]||''}" placeholder="e.g. Enter"></div>
+                            <div class="settings-row"><label>B / Circle (Btn 1)</label><input type="text" class="input-modern slim focusable map-input" data-btn="1" value="${window.userPrefs.keyMap[1]||''}" placeholder="e.g. Escape"></div>
+                            <div class="settings-row"><label>D-Pad Up (Btn 12)</label><input type="text" class="input-modern slim focusable map-input" data-btn="12" value="${window.userPrefs.keyMap[12]||''}" placeholder="e.g. ArrowUp"></div>
+                            <div class="settings-row"><label>D-Pad Down (Btn 13)</label><input type="text" class="input-modern slim focusable map-input" data-btn="13" value="${window.userPrefs.keyMap[13]||''}" placeholder="e.g. ArrowDown"></div>
+                            <div class="settings-row"><label>D-Pad Left (Btn 14)</label><input type="text" class="input-modern slim focusable map-input" data-btn="14" value="${window.userPrefs.keyMap[14]||''}" placeholder="e.g. ArrowLeft"></div>
+                            <div class="settings-row"><label>D-Pad Right (Btn 15)</label><input type="text" class="input-modern slim focusable map-input" data-btn="15" value="${window.userPrefs.keyMap[15]||''}" placeholder="e.g. ArrowRight"></div>
+                        </div>
                     </div>
 
                     <div class="glass p-4 rad-lg mb-4">
@@ -1278,6 +1393,18 @@
                 </div>
             `;
             setTimeout(() => window.updateFocusables && window.updateFocusables(), 100);
+
+            // Mapping Event Listeners
+            document.querySelectorAll('.map-input').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    const btnIdx = e.target.getAttribute('data-btn');
+                    const val = e.target.value.trim();
+                    if(val) window.userPrefs.keyMap[btnIdx] = val;
+                    else delete window.userPrefs.keyMap[btnIdx];
+                    localStorage.setItem('gameLoomPrefs', JSON.stringify(window.userPrefs));
+                    showToast("Mapping saved", "success");
+                });
+            });
 
             document.querySelectorAll('#set-emoji .emoji-option').forEach(opt => {
                 opt.addEventListener('click', () => {
@@ -1375,15 +1502,17 @@
         ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
         /* === FOCUS SYSTEM (KEYBOARD/CONTROLLER) === */
-        .focusable:focus, .gamepad-focus { outline: 3px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 15px var(--accent); }
-
+        .focusable:focus, .focusable:hover { outline: none; box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 60,110,255), 0.5); transform: translateY(-2px); transition: all 0.2s ease; }
+        .game-card.focusable:hover { border-color: var(--accent); }
+        input.focusable:focus, textarea.focusable:focus { transform: none; box-shadow: 0 0 0 3px var(--accent); border-color: var(--accent); }
+        
         /* === UTILS === */
         .glass { background: var(--bg-glass); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--border-glass); border-radius: 20px; }
         .text-accent { color: var(--accent); } .text-muted { color: var(--text-muted); } .text-danger { color: var(--danger); } .text-center { text-align: center; }
         .w-100 { width: 100%; } .flex-1 { flex: 1; }
         .mt-2 { margin-top: 0.5rem; } .mt-3 { margin-top: 1rem; } .mt-4 { margin-top: 1.5rem; } .mt-5 { margin-top: 2rem; }
         .mb-2 { margin-bottom: 0.5rem; } .mb-3 { margin-bottom: 1rem; } .mb-4 { margin-bottom: 1.5rem; }
-        .p-4 { padding: 1.5rem; } .d-block { display: block; }
+        .p-3 { padding: 1rem; } .p-4 { padding: 1.5rem; } .d-block { display: block; }
         .max-w-800 { max-width: 800px; } .rad-lg { border-radius: 24px; }
         .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .hidden { display: none !important; }
@@ -1396,18 +1525,15 @@
         /* === BUTTONS & INPUTS === */
         button { font-family: var(--font); cursor: pointer; border: none; transition: all 0.2s ease-in-out; outline: none; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; }
         .btn-primary { background: var(--accent); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.2); }
-        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); }
         .btn-primary:active:not(:disabled) { transform: scale(0.95); }
         .btn-primary.large { padding: 0.8rem 1.8rem; font-size: 1.1rem; }
         .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
         .btn-secondary { background: rgba(255,255,255,0.1); color: white; padding: 0.6rem 1.2rem; border-radius: 12px; font-weight: 600; transition: all 0.2s ease-in-out; }
-        .btn-secondary:hover { background: rgba(255,255,255,0.15); }
         .btn-secondary:active { transform: scale(0.95); }
         .btn-secondary.active { background: var(--accent); }
         .btn-text { background: transparent; color: var(--text-muted); font-weight: 500; font-size: 0.95rem; }
         .btn-text:hover { color: var(--text-main); }
         .btn-icon { background: rgba(255,255,255,0.05); color: white; width: 40px; height: 40px; border-radius: 12px; transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
-        .btn-icon:hover { background: rgba(255,255,255,0.15); transform: translateY(-2px); }
         .btn-icon:active { transform: scale(0.9); }
         .btn-icon.large { width: 48px; height: 48px; font-size: 1.2rem; }
 
@@ -1437,7 +1563,6 @@
         .auth-card input { margin-bottom: 1rem; }
         .emoji-picker-mini { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin-top: 0.5rem; }
         .emoji-option { font-size: 1.8rem; padding: 0.3rem; border-radius: 50%; cursor: pointer; transition: 0.2s; background: rgba(255,255,255,0.02); }
-        .emoji-option:hover { background: rgba(255,255,255,0.1); transform: scale(1.1); }
         .emoji-option.active { background: rgba(60,110,255,0.2); transform: scale(1.15); box-shadow: 0 0 15px rgba(60,110,255,0.3); }
 
         /* === LAYOUT === */
@@ -1450,7 +1575,6 @@
         .nav-brand { font-size: 1.6rem; font-weight: 800; padding: 0 1rem 2rem 1rem; color: white; display: flex; align-items: center; gap: 0.6rem; }
         .nav-links { flex: 1; display: flex; flex-direction: column; gap: 0.4rem; }
         .nav-btn { display: flex; justify-content: flex-start; align-items: center; gap: 1rem; padding: 0.8rem 1rem; background: transparent; color: var(--text-muted); border-radius: 12px; font-weight: 600; font-size: 1rem; transition: 0.2s; text-align: left; }
-        .nav-btn:hover { background: rgba(255,255,255,0.05); color: white; }
         .nav-btn.active { background: rgba(60,110,255,0.15); color: var(--accent); }
         .nav-bottom { border-top: 1px solid var(--border-glass); padding-top: 1rem; margin-top: 1rem; display: flex; flex-direction: column; gap: 0.4rem;}
         .nav-user { display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem 0.5rem; margin-top: 0.5rem; }
@@ -1479,9 +1603,8 @@
         .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
         .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.5rem; }
         .game-card { overflow: hidden; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); cursor: pointer; display: flex; flex-direction: column; }
-        .game-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.5); border-color: rgba(60,110,255,0.4); }
         .game-image-wrapper { position: relative; height: 160px; overflow: hidden; background: #0f172a; flex-shrink:0; }
-        .game-image-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s; }
+        .game-image-wrapper img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s; aspect-ratio: 16/9; }
         .game-card:hover .game-image-wrapper img { transform: scale(1.08); }
         .game-info { padding: 1.2rem; flex: 1; display: flex; flex-direction: column; }
         .game-meta { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); font-weight: 600; margin-top: auto; margin-bottom: 0.8rem; }
@@ -1490,9 +1613,8 @@
 
         /* === LIBRARY / UPLOADS LIST === */
         .library-list { display: flex; flex-direction: column; gap: 1rem; }
-        .lib-item { display: flex; align-items: center; padding: 1rem; gap: 1.5rem; transition: 0.2s; }
-        .lib-item:hover { background: var(--bg-glass-hover); }
-        .lib-thumb { width: 120px; height: 75px; border-radius: 12px; object-fit: cover; background: #0f172a; flex-shrink:0; }
+        .lib-item { display: flex; align-items: center; padding: 1rem; gap: 1.5rem; transition: 0.2s; cursor:pointer;}
+        .lib-thumb { width: 120px; height: 75px; border-radius: 12px; object-fit: cover; background: #0f172a; flex-shrink:0; aspect-ratio: 16/9; }
         .lib-details { flex: 1; }
         .lib-actions { display: flex; gap: 0.8rem; }
 
@@ -1506,7 +1628,7 @@
         .detail-desc { font-size: 1.05rem; line-height: 1.6; color: #cbd5e1; white-space: pre-line; }
         
         .screenshot-gallery { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; margin-top: 1rem; scroll-behavior: smooth; }
-        .gallery-img { height: 200px; width: auto; max-width: 90vw; border-radius: 16px; object-fit: cover; border: 1px solid var(--border-glass); flex-shrink:0; }
+        .gallery-img { height: 150px; width: auto; aspect-ratio: 16/9; max-width: 90vw; border-radius: 12px; object-fit: cover; background: #0f172a; border: 1px solid var(--border-glass); flex-shrink:0; cursor:pointer; }
         
         .comment-item { display: flex; gap: 1rem; padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 16px; margin-bottom: 0.8rem; transition: all 0.3s ease; }
         .c-avatar { font-size: 1.8rem; width: 48px; height: 48px; background: rgba(255,255,255,0.05); border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
